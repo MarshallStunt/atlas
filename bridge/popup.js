@@ -13,7 +13,7 @@ async function show() {
   else if (!lastRun.ok) { st.className = 'status bad'; $('statusText').textContent = lastRun.agentError || 'Not connected to Aura on this computer'; }
   else { st.className = 'status ok'; $('statusText').textContent = 'Connected to Aura'; }
   $('when').textContent = lastRun ? 'Last sync ' + ago(lastRun.at) : '';
-  $('apps').innerHTML = Object.entries(lastRun?.apps || {}).filter(([n, a]) => !(n === 'Outlook' && a.state === 'off'))
+  $('apps').innerHTML = Object.entries(lastRun?.apps || {}).filter(([, a]) => a.state !== 'off') // turned-off apps aren't shown
     .map(([n, a]) => `<div class="app ${a.state}"><span class="dot"></span><div><div class="n">${esc(n)}</div><div class="t" title="${esc(a.text)}">${esc(a.text)}</div></div></div>`).join('')
     || '<div class="app"><div class="t">Apps appear here after the first sync.</div></div>';
 }

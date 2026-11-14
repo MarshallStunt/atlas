@@ -62,7 +62,7 @@ export function connections(net = {}) {
     const app = (name, key, data, okText, url) => {
       if (!dev) return;
       const id = { gmail: 'gmail', calendar: 'gcal', slack: 'slack', outlook: 'outlook' }[key];
-      if (appsOn[id] === false) return add(G('Apps'), name, 'off', multi ? 'Turned off for this space.' : 'Turned off for this computer.', goto('Change', 'apps'));
+      if (appsOn[id] === false) return; // turned off: not listed (switch it back on in System → Apps)
       if (!caps.browser_read) return add(G('Apps'), name, 'off', 'Off: reading web apps is switched off on the computer.');
       if (errs[key] && /^SIGN_IN:/.test(errs[key])) return add(G('Apps'), name, 'error', errs[key].replace(/^SIGN_IN:\s*/, '') + ' Aura can\'t sign in for you.', open(`Open ${name} to sign in`, url));
       if (errs[key]) return add(G('Apps'), name, 'warn', `${errs[key].replace(/; retrying next minute$/, '')}. Aura retries automatically every minute.`, { type: 'reconnect', label: 'Retry now' });
@@ -80,7 +80,7 @@ export function connections(net = {}) {
     const tabs = inbox.openTabs || [];
     const offByName = new Set((spApps?.list || []).filter(a => !a.on).map(a => a.name.split(' (')[0]));
     for (const [name, re, url] of WEB_APPS) {
-      if (offByName.has(name) || (name === 'Google Drive & Docs' && appsOn.gdrive === false)) { add(G('Web apps'), name, 'off', multi ? 'Turned off for this space.' : 'Turned off for this computer.'); continue; }
+      if (offByName.has(name) || (name === 'Google Drive & Docs' && appsOn.gdrive === false)) continue; // turned off: not listed
       const hit = tabs.some(t => re.test(t.url || ''));
       if (hit) add(G('Web apps'), name, caps.browser_read && bridgeOk ? 'ok' : 'warn', caps.browser_read && bridgeOk ? 'Open in the browser: Aura can read it when you ask.' : 'Open, but the extension isn\'t syncing.');
       else if (url) add(G('Web apps'), name, 'idle', 'Not open. Aura can use it once it\'s open in the browser.', open(`Open ${name} on computer`, url));
