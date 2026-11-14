@@ -14,10 +14,17 @@ function browserName() {
   const brands = (navigator.userAgentData?.brands || []).map(b => b.brand).join(' ');
   return /Edge/.test(brands) ? 'Microsoft Edge' : /Opera/.test(brands) ? 'Opera' : 'Google Chrome';
 }
+// Every browser that loads this extension from the same folder gets the same extension ID, so each
+// install makes its own random ID; that's how Aura tells Chrome, Brave, Edge and profiles apart.
+async function installId() {
+  let { installId: id } = await chrome.storage.local.get('installId');
+  if (!id) { id = crypto.randomUUID(); await chrome.storage.local.set({ installId: id }); }
+  return id;
+}
 async function ensureToken() {
   const s = await settings();
   if (s.token) return s;
-  const r = await fetch(s.agent + '/bridge/hello', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ browser: browserName() }) });
+  const r = await fetch(s.agent + '/bridge/hello', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ browser: browserName(), installId: await installId() }) });
   if (!r.ok) throw new Error(r.status === 403 ? 'browser access is switched off in the agent' : 'agent said ' + r.status);
   const { token, space } = await r.json();
   await chrome.storage.local.set({ token, space: space || '' });

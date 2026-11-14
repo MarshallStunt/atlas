@@ -363,18 +363,20 @@ const local = http.createServer(async (req, res) => {
       if (!allowed('browser_read') && !allowed('browser_act')) return json(res, 403, { error: 'browser access is switched off on this computer' });
       let b = {}; try { b = await body(req); } catch {}
       const browserName = /^[A-Za-z ]{3,30}$/.test(b.browser || '') ? b.browser : 'Browser';
-      // Same extension as before -> its space. The first extension after upgrading takes over the
-      // original space; any other browser becomes a new space.
-      let s = spaces.list.find(x => x.origin === origin) || spaces.list.find(x => !x.origin);
+      // Find this browser's space by its install ID (the extension ID is the same in every browser that
+      // loads it from the same folder). A space from before install IDs can only be claimed by the same
+      // kind of browser it came from; anything else becomes a new space.
+      const iid = /^[0-9a-f-]{36}$/i.test(b.installId || '') ? b.installId : null;
+      let s = (iid && spaces.list.find(x => x.installId === iid)) || spaces.list.find(x => !x.installId && !x.claimed && x.browser === browserName);
       if (!s) {
         const base = browserName.replace(/^Google /, '').replace(/^Microsoft /, '').replace(/ Browser$/, '');
         let name = base, n = 2; while (spaces.list.some(x => x.name.toLowerCase() === name.toLowerCase())) name = `${base} ${n++}`;
-        s = { id: crypto.randomBytes(5).toString('hex'), name, origin, token: crypto.randomBytes(18).toString('base64url'), browser: browserName, private: false };
+        s = { id: crypto.randomBytes(5).toString('hex'), name, origin, installId: iid, claimed: true, token: crypto.randomBytes(18).toString('base64url'), browser: browserName, private: false };
         spaces.list.push(s);
         fs.mkdirSync(f(path.join('spaces', s.id)), { recursive: true, mode: 0o700 });
         log(`New space "${name}" from ${browserName}.`);
       }
-      s.origin = origin; s.browser = browserName; saveSpaces();
+      s.origin = origin; s.browser = browserName; s.claimed = true; if (iid) s.installId = iid; saveSpaces();
       audit({ event: 'bridge.hello', extension: origin, space: s.name });
       pushSnapshot();
       return json(res, 200, { token: s.token, space: s.name });
