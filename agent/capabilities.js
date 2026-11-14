@@ -28,7 +28,6 @@ const run = (cmd, args, { timeout = 6000 } = {}) => new Promise(resolve => {
   execFile(cmd, args, { timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) =>
     resolve({ ok: !err, stdout: String(stdout || ''), stderr: String(stderr || ''), missing: err?.code === 'ENOENT' }));
 });
-const ps = (script, timeout) => run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout });
 const has = async cmd => (await run(WIN ? 'where' : 'which', [cmd])).ok;
 
 /* ---------------- status ---------------- */
@@ -38,11 +37,7 @@ async function battery() {
     const m = r.stdout.match(/(\d+)%;\s*([^;]+);/);
     return m ? { percent: Number(m[1]), onAC: /AC Power/.test(r.stdout) } : null;
   }
-  if (WIN) {
-    const r = await ps('$b=Get-CimInstance Win32_Battery; if($b){"$($b.EstimatedChargeRemaining) $($b.BatteryStatus)"}');
-    const m = r.stdout.trim().match(/^(\d+)\s+(\d+)/);
-    return m ? { percent: Number(m[1]), onAC: m[2] !== '1' } : null;
-  }
+  if (WIN) return null; // no background PowerShell on Windows (security tools flag it), so no battery there
   try {
     const dir = '/sys/class/power_supply';
     const bat = fs.readdirSync(dir).find(d => d.startsWith('BAT'));
@@ -58,10 +53,15 @@ async function runningApps() {
   const names = new Set();
   let call = null;
   if (WIN) {
-    const r = await ps('Get-Process | Where-Object {$_.MainWindowTitle} | ForEach-Object {"$($_.ProcessName)`t$($_.MainWindowTitle)"}; "--"; (Get-Process -Name CptHost,aomhost -ErrorAction SilentlyContinue).Count', 10000);
-    const [apps, count] = r.stdout.split('--');
-    for (const line of apps.split(/\r?\n/)) { const n = line.split('\t')[0].trim(); if (n) names.add(n); }
-    if (Number(count) > 0) call = 'Zoom';
+    // tasklist is a plain built-in Windows tool; apps with a window title are the ones the user sees.
+    const r = await run('tasklist', ['/fo', 'csv', '/nh', '/v'], { timeout: 15000 });
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const cols = line.match(/"([^"]*)"/g)?.map(c => c.slice(1, -1));
+      if (!cols || cols.length < 9) continue;
+      const image = cols[0].replace(/\.exe$/i, ''), title = cols[8];
+      if (/^(CptHost|aomhost)$/i.test(image)) call = 'Zoom';
+      if (title && title !== 'N/A' && !/^(explorer|SearchHost|TextInputHost|ShellExperienceHost|ApplicationFrameHost)$/i.test(image)) names.add(image);
+    }
   } else {
     const r = await run('ps', ['-axo', 'comm=']);
     for (const line of r.stdout.split('\n')) {
@@ -79,13 +79,7 @@ async function frontWindow() {
     const r = await run('osascript', ['-e', 'tell application "System Events" to get name of first application process whose frontmost is true'], { timeout: 3000 });
     return r.ok ? r.stdout.trim() : null;
   }
-  if (WIN) {
-    const r = await ps(`Add-Type @"
-using System;using System.Runtime.InteropServices;using System.Text;
-public class W{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();[DllImport("user32.dll")]public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);}
-"@; $s=New-Object Text.StringBuilder 256; [void][W]::GetWindowText([W]::GetForegroundWindow(),$s,256); $s.ToString()`, 8000);
-    return r.ok ? r.stdout.trim() || null : null;
-  }
+  if (WIN) return null; // would need PowerShell + Win32 calls, which security tools flag
   const r = await run('xdotool', ['getactivewindow', 'getwindowname'], { timeout: 3000 });
   return r.ok ? r.stdout.trim() : null;
 }
@@ -96,28 +90,18 @@ async function idleSeconds() {
     const m = r.stdout.match(/"HIDIdleTime" = (\d+)/);
     return m ? Math.round(Number(m[1]) / 1e9) : null;
   }
-  if (WIN) {
-    const r = await ps(`Add-Type @"
-using System;using System.Runtime.InteropServices;
-public class I{[StructLayout(LayoutKind.Sequential)]public struct L{public uint s;public uint t;}[DllImport("user32.dll")]public static extern bool GetLastInputInfo(ref L l);}
-"@; $l=New-Object I+L; $l.s=8; [void][I]::GetLastInputInfo([ref]$l); [int]([Environment]::TickCount - $l.t)/1000`, 8000);
-    const n = Number(r.stdout.trim());
-    return r.ok && !isNaN(n) ? Math.round(n) : null;
-  }
+  if (WIN) return null; // same reason as above
   const r = await run('xprintidle', []);
   return r.ok ? Math.round(Number(r.stdout) / 1000) : null;
 }
 
+// Node's own disk check: no external program on any OS.
 async function disk() {
-  if (WIN) {
-    const r = await ps('$d=Get-PSDrive -Name ($env:SystemDrive.TrimEnd(":")); "$($d.Free) $($d.Used)"');
-    const [free, used] = r.stdout.trim().split(/\s+/).map(Number);
-    return free ? { freeGB: +(free / 1e9).toFixed(1), totalGB: +((free + used) / 1e9).toFixed(1) } : null;
-  }
-  const r = await run('df', ['-k', os.homedir()]);
-  const cols = r.stdout.trim().split('\n').pop()?.split(/\s+/) || [];
-  const total = Number(cols[1]) * 1024, free = Number(cols[3]) * 1024;
-  return total ? { freeGB: +(free / 1e9).toFixed(1), totalGB: +(total / 1e9).toFixed(1) } : null;
+  try {
+    const st = await fs.promises.statfs(WIN ? (process.env.SystemDrive || 'C:') + '\\' : os.homedir());
+    const total = st.blocks * st.bsize, free = st.bavail * st.bsize;
+    return total ? { freeGB: +(free / 1e9).toFixed(1), totalGB: +(total / 1e9).toFixed(1) } : null;
+  } catch { return null; }
 }
 
 export async function status() {
@@ -179,11 +163,9 @@ async function screenshot() {
       return shotResult(raw);
     }
     if (WIN) {
-      // DPI-aware so the whole screen is captured on scaled displays; any failure comes back word for word.
+      // Only runs when you ask for a screenshot. Plain .NET drawing calls; any failure comes back word for word.
       const script = [
         'Add-Type -AssemblyName System.Windows.Forms, System.Drawing',
-        'Add-Type -TypeDefinition \'using System; using System.Runtime.InteropServices; public class AuraDpi { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }\'',
-        '[AuraDpi]::SetProcessDPIAware() | Out-Null',
         '$b = [System.Windows.Forms.SystemInformation]::VirtualScreen',
         '$bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)',
         '$g = [System.Drawing.Graphics]::FromImage($bmp)',
@@ -196,7 +178,7 @@ async function screenshot() {
         '$small.Save($env:AURA_OUT, $enc, $p)',
         '$g.Dispose(); $bmp.Dispose(); $small.Dispose()',
       ].join('; ');
-      const r = await new Promise(resolve => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      const r = await new Promise(resolve => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
         { env: { ...process.env, AURA_OUT: out }, timeout: 25000, windowsHide: true }, (err, stdout, stderr) => resolve({ ok: !err, err: String(stderr || err?.message || '').trim() })));
       if (!r.ok || !fs.existsSync(out)) {
         const why = /CopyFromScreen|handle is invalid|desktop/i.test(r.err) ? 'Windows has no screen to capture right now (locked, asleep, or Aura is running outside your desktop session).' : r.err.split('\n').slice(0, 3).join(' ').slice(0, 300);

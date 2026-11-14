@@ -484,10 +484,10 @@ function renderNow() {
     const idle = comp.idleSeconds == null ? '—' : comp.idleSeconds < 60 ? 'active now' : `away ${short(Date.now() - comp.idleSeconds * 1000)}`;
     parts.push(`<div class="panel"><div class="panel-head"><span class="label">${esc(comp.host)} · ${esc(comp.platform)}</span><span class="mono dim" style="font-size:11px">UP ${esc(comp.uptimeHours)}H</span></div>
       <div class="hud">
-        ${bt ? gauge(bt.percent / 100, bt.onAC ? 'charging' : 'battery', bt.percent < 20 ? '#fb7185' : '#a3e635', bt.percent + '%') : gauge(1, 'power', '#a3e635', 'AC')}
+        ${bt ? gauge(bt.percent / 100, bt.onAC ? 'charging' : 'battery', bt.percent < 20 ? '#fb7185' : '#a3e635', bt.percent + '%') : ''}
         ${gauge(comp.memoryUsedPct / 100, 'memory', comp.memoryUsedPct > 90 ? '#fbbf24' : '#22d3ee', comp.memoryUsedPct + '%')}
         ${dk ? gauge(1 - dk.freeGB / dk.totalGB, 'disk free', '#a78bfa', Math.round(dk.freeGB) + 'G') : ''}
-        ${gauge(comp.idleSeconds == null ? 0 : comp.idleSeconds < 60 ? 1 : Math.max(0.05, 1 - comp.idleSeconds / 3600), 'presence', '#f472b6', comp.idleSeconds != null && comp.idleSeconds < 60 ? 'ON' : 'AWAY')}
+        ${comp.idleSeconds == null ? '' : gauge(comp.idleSeconds < 60 ? 1 : Math.max(0.05, 1 - comp.idleSeconds / 3600), 'presence', '#f472b6', comp.idleSeconds < 60 ? 'ON' : 'AWAY')}
       </div>
       <div class="kv" style="margin-top:10px"><span>Front</span><span>${esc(comp.frontWindow || '—')}</span></div>
       <div class="kv"><span>User</span><span>${esc(idle)}</span></div>

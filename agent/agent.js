@@ -118,7 +118,7 @@ function launchBrowser(reason) {
   lastLaunch = Date.now();
   const exe = { 'Google Chrome': ['chrome', 'google-chrome'], 'Microsoft Edge': ['msedge', 'microsoft-edge'], 'Brave Browser': ['brave', 'brave-browser'], Opera: ['opera', 'opera'] }[browserApp] || ['chrome', 'google-chrome'];
   const [cmd, args] = process.platform === 'darwin' ? ['open', ['-g', '-a', browserApp]]
-    : process.platform === 'win32' ? ['powershell.exe', ['-NoProfile', '-Command', `Start-Process ${exe[0]} -WindowStyle Minimized`]]
+    : process.platform === 'win32' ? ['cmd.exe', ['/d', '/c', 'start', '', '/min', exe[0]]]
     : [exe[1], []];
   try { spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true }).unref(); } catch (e) { return { launched: false, note: 'Could not start the browser: ' + e.message }; }
   audit({ event: 'reconnect.browser_started', browser: browserApp, reason });
