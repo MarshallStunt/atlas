@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Aura Bridge",
-  "version": "0.4.0",
-  "description": "One install gives Aura read access to the web apps you're signed in to (mail, calendar, chat, anything), handed only to the Aura agent on this computer.",
+  "version": "0.5.0",
+  "description": "Connects this browser to Aura on your computer: reads the web apps you're signed in to (mail, calendar, chat) and hands them only to the Aura agent here.",
   "permissions": [
     "storage",
     "alarms",
@@ -15,10 +15,9 @@
   "background": {
     "service_worker": "background.js"
   },
-  "options_page": "options.html",
   "action": {
     "default_title": "Aura Bridge",
-    "default_popup": "options.html",
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -30,5 +29,9 @@
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
+  },
+  "options_ui": {
+    "page": "popup.html",
+    "open_in_tab": false
   }
 }

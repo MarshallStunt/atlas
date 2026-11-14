@@ -66,7 +66,7 @@ function appChoices(id = spaces.list[0].id) {
   return { apps: Object.fromEntries(APPS.map(a => [a.id, saved.apps?.[a.id] ?? a.def !== false])), otherSites: saved.otherSites !== false, outlookMailUrl: saved.outlookMailUrl || '', outlookCalUrl: saved.outlookCalUrl || '' };
 }
 // What a space's browser extension needs to know: which apps to sync and which sites it may read.
-const bridgeConfig = id => { const c = appChoices(id); return { space: spaceById(id)?.name, bridgeVersion: BRIDGE_VERSION, apps: c.apps, otherSites: c.otherSites, outlook: { mail: c.outlookMailUrl, calendar: c.outlookCalUrl }, matchers: Object.fromEntries(APPS.map(a => [a.id, matcherFor(a, c)])) }; };
+const bridgeConfig = id => { const c = appChoices(id); return { space: spaceById(id)?.name, hubUrl, bridgeVersion: BRIDGE_VERSION, apps: c.apps, otherSites: c.otherSites, outlook: { mail: c.outlookMailUrl, calendar: c.outlookCalUrl }, matchers: Object.fromEntries(APPS.map(a => [a.id, matcherFor(a, c)])) }; };
 function answerPoll(id, jobs = []) {
   const r = R(id); if (!r.poller) return false;
   const { res, timer } = r.poller; r.poller = null; clearTimeout(timer);
@@ -229,6 +229,29 @@ tools.set_space = async ({ space, name, private: priv, remove } = {}) => {
   return { ok: true, id: s.id, name: s.name, private: s.private };
 };
 
+// Backup / restore of this computer's choices (spaces' names, privacy and apps). The local safety
+// switches (http://127.0.0.1:8101) are never exported or changed from here.
+tools.get_config = async () => ({ spaces: spaces.list.map(s => ({ name: s.name, private: !!s.private, browser: s.browser, apps: appChoices(s.id) })) });
+tools.apply_config = async ({ spaces: list = [] } = {}) => {
+  const applied = [], skipped = [];
+  for (const item of Array.isArray(list) ? list.slice(0, 20) : []) {
+    const s = findSpace(item?.name);
+    if (!s) { skipped.push(String(item?.name || '?').slice(0, 24)); continue; }
+    if (typeof item.private === 'boolean') s.private = item.private;
+    const a = item.apps || {};
+    const cur = appChoices(s.id);
+    for (const [id, on] of Object.entries(a.apps || {})) if (APPS.some(x => x.id === id)) cur.apps[id] = !!on;
+    if (typeof a.otherSites === 'boolean') cur.otherSites = a.otherSites;
+    try { if (a.outlookMailUrl !== undefined) cur.outlookMailUrl = cleanLink(a.outlookMailUrl); if (a.outlookCalUrl !== undefined) cur.outlookCalUrl = cleanLink(a.outlookCalUrl); } catch {}
+    fs.mkdirSync(f(path.join('spaces', s.id)), { recursive: true, mode: 0o700 });
+    writeJson(sp(s.id, 'apps.json'), cur);
+    answerPoll(s.id);
+    applied.push(s.name);
+  }
+  saveSpaces(); audit({ event: 'config.restored', applied, skipped }); pushSnapshot();
+  return { ok: true, applied, skipped };
+};
+
 tools.reconnect = async () => {
   if (!allowed('browser_read')) return { ok: false, note: 'Reading web apps is switched off on this computer.' };
   const notes = [];
@@ -261,7 +284,7 @@ async function pair() {
   const r = await fetch(hubUrl + '/agent/pair/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publicKey: pub, name, platform: process.platform }) });
   if (!r.ok) throw new Error('Hub refused pairing: ' + await r.text());
   const { requestId, code, expiresIn } = await r.json();
-  console.log(`\n  Pair this computer: open Aura on your phone → Devices → Pair, and enter\n\n        ${code}\n\n  (expires in ${Math.round(expiresIn / 60)} minutes)\n`);
+  console.log(`\n  Pair this computer: open Aura on your phone → System → Pair, and enter\n\n        ${code}\n\n  (expires in ${Math.round(expiresIn / 60)} minutes)\n`);
   pairingCode = code;
   for (;;) {
     await new Promise(res => setTimeout(res, 2000));

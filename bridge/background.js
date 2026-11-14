@@ -119,7 +119,7 @@ function parseWhen(dateText, timeText) {
   return { at: day.getTime(), allDay: false };
 }
 async function calendar(email) {
-  if (!email) throw new Error('needs your email (set it in the bridge options, or let Gmail sync first)');
+  if (!email) throw new Error('needs Gmail to be on (to know your calendar address), or set the address under Advanced in this extension');
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const r = await fetchSignedIn(`https://calendar.google.com/calendar/htmlembed?src=${encodeURIComponent(email)}&mode=AGENDA&ctz=${encodeURIComponent(tz)}`, {
     name: 'Google Calendar', tabPattern: 'https://calendar.google.com/*', openUrl: 'https://calendar.google.com/calendar/u/0/r',
@@ -141,9 +141,25 @@ async function calendar(email) {
 /* ---------- Slack: runs inside the open Slack tab with that tab's own session ---------- */
 async function slackInPage(job) {
   try {
-    const cfg = JSON.parse(localStorage.getItem('localConfig_v2') || 'null');
-    const team = cfg && Object.values(cfg.teams || {})[0];
-    if (!team?.token) return { ok: false, error: 'Not signed in to Slack in that tab.' };
+    // Slack keeps its session in this tab's storage. Give a starting tab time to load it, and try every
+    // signed-in workspace (the one open in the tab first) instead of only the first one.
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    let teams = [];
+    for (let i = 0; i < 30 && !teams.length; i++) {
+      const cfg = JSON.parse(localStorage.getItem('localConfig_v2') || 'null');
+      teams = Object.entries(cfg?.teams || {}).filter(([, t]) => t?.token);
+      if (!teams.length) await wait(500);
+    }
+    if (!teams.length) return { ok: false, error: /signin|workspace-signin|checkcookie/i.test(location.href) ? 'Not signed in to Slack in that tab.' : 'LOADING' };
+    const here = (location.pathname.match(/\/client\/(T[A-Z0-9]+)/) || [])[1];
+    teams.sort(([a], [b]) => (b === here) - (a === here));
+    let team = null;
+    for (const [, t] of teams) {
+      const fd = new FormData(); fd.append('token', t.token);
+      const r = await (await fetch('/api/auth.test', { method: 'POST', body: fd, credentials: 'include' })).json().catch(() => ({}));
+      if (r.ok) { team = t; break; }
+    }
+    if (!team) return { ok: false, error: 'Not signed in to Slack in that tab.' };
     const call = async (m, p = {}) => {
       const fd = new FormData(); fd.append('token', team.token);
       for (const [k, v] of Object.entries(p)) fd.append(k, v);
@@ -208,14 +224,20 @@ async function slackInPage(job) {
 }
 // People often use the Slack desktop app, so there may be no Slack tab: Aura keeps its own pinned one.
 async function slackTabRun(job) {
-  let { result, fresh } = await inAppTab('Slack', 'https://app.slack.com/*', 'https://app.slack.com/client', slackInPage, [job || null]);
-  // A freshly (re)loaded Slack client needs a few seconds before it has signed in.
-  for (let i = 0; fresh && !result?.ok && /Not signed in/.test(result?.error || '') && i < 6; i++) {
-    await new Promise(r => setTimeout(r, 3000));
-    ({ result } = await inAppTab('Slack', 'https://app.slack.com/*', 'https://app.slack.com/client', slackInPage, [job || null]));
+  const run = () => inAppTab('Slack', 'https://app.slack.com/*', 'https://app.slack.com/client', slackInPage, [job || null]);
+  let { result, tab } = await run();
+  // Still starting up, or the stored session looks stale: reload the tab once and look again before
+  // deciding anything. Only call it a sign-out when Slack itself shows its sign-in page.
+  const ours = ((await chrome.storage.local.get('tabs')).tabs || {}).Slack === tab?.id; // never reload a tab you're using
+  if (!result?.ok && ours) {
+    await chrome.tabs.reload(tab.id); await waitLoaded(tab.id, 30000);
+    ({ result, tab } = await run());
   }
-  if (!result?.ok) throw new Error(/Not signed in/.test(result?.error || '') ? "SIGN_IN: you're signed out of Slack. Sign in once in the pinned Slack tab." : result?.error || 'the Slack tab did not answer; retrying next minute');
-  return result;
+  if (result?.ok) return result;
+  const onSignIn = SIGN_IN_PAGE.test(tab?.url || '');
+  if (result?.error === 'LOADING' && !onSignIn) throw new Error('Slack is still loading in its tab; retrying next minute');
+  if (onSignIn || /Not signed in/.test(result?.error || '')) throw new Error("SIGN_IN: you're signed out of Slack. Sign in once in the pinned Slack tab.");
+  throw new Error(result?.error || 'the Slack tab did not answer; retrying next minute');
 }
 
 /* ---------- Outlook (Microsoft 365): read from Aura's own pinned Outlook tabs ----------
@@ -354,10 +376,27 @@ function sync() {
       if (ok) setConfig((await r.json().catch(() => ({}))).config);
       if (!ok) out.errors.agent = `agent said ${r.status}`;
     } catch (e) { out.errors.agent = /fetch/i.test(e.message) ? 'the Aura agent is not running on this computer' : e.message; }
-    const detail = { outlook: out.outlook ? `${out.outlook.unread} unread, ${out.outlook.events.length} events` : out.errors.outlook, gmail: out.gmail ? `${out.gmail.unread} unread` : out.errors.gmail, calendar: out.calendar ? `${out.calendar.events.length} events` : out.errors.calendar, slack: out.slack ? `${out.slack.mentions.length} mentions` : out.errors.slack, ...(out.errors.agent ? { agent: out.errors.agent } : {}) };
-    await chrome.storage.local.set({ lastRun: { at: Date.now(), ok, detail } });
+    // Per-app status for the popup and the icon badge.
+    const st = (key, on, okText) => !on ? { state: 'off', text: 'Off for this space' } : out.errors[key] ? { state: /^SIGN_IN:/.test(out.errors[key]) ? 'signin' : 'warn', text: out.errors[key].replace(/^SIGN_IN:\s*/, '') } : out[key] ? { state: 'ok', text: okText(out[key]) } : { state: 'warn', text: 'No data yet' };
+    const apps = {
+      Gmail: st('gmail', appOn('gmail'), d => `${d.email ? d.email + ' · ' : ''}${d.unread} unread`),
+      'Google Calendar': st('calendar', appOn('gcal'), d => `${d.events.length} upcoming events`),
+      Slack: st('slack', appOn('slack'), d => `${d.team || 'Workspace'} · ${d.mentions.length} mentions`),
+      Outlook: st('outlook', appConfig?.apps?.outlook === true, d => `${d.who ? d.who + ' · ' : ''}${d.unread} unread · ${d.events.length} events`),
+    };
+    await chrome.storage.local.set({ lastRun: { at: Date.now(), ok, agentError: out.errors.agent || null, apps } });
+    updateBadge(ok, apps);
   })().finally(() => { syncing = null; });
   return syncing;
+}
+
+// Icon badge: nothing when all is well, "!" when something needs you.
+function updateBadge(ok, apps) {
+  const bad = Object.entries(apps || {}).filter(([, a]) => a.state === 'signin' || a.state === 'warn');
+  const text = !ok ? '!' : bad.length ? String(bad.length) : '';
+  chrome.action.setBadgeText({ text });
+  chrome.action.setBadgeBackgroundColor({ color: !ok || bad.some(([, a]) => a.state === 'signin') ? '#f43f5e' : '#f59e0b' });
+  chrome.action.setTitle({ title: !ok ? 'Aura Bridge: not connected to Aura on this computer' : bad.length ? `Aura Bridge: ${bad.map(([n]) => n).join(', ')} need attention` : `Aura Bridge: connected${appConfig?.space ? ' · ' + appConfig.space : ''}` });
 }
 
 /* ---------- which apps this computer uses (set in Aura → System → Apps; sent by the agent) ---------- */
@@ -504,3 +543,5 @@ chrome.runtime.onInstalled.addListener(() => { sync(); pollJobs(); });
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (msg?.type === 'sync') { sync().then(() => reply({ ok: true })); pollJobs(); return true; }
 });
+// Show the last known state on the icon as soon as the browser starts.
+chrome.storage.local.get('lastRun').then(r => r.lastRun && updateBadge(r.lastRun.ok, r.lastRun.apps));

@@ -17,6 +17,11 @@ export function setSettings(patch) {
   const s = load('settings.json', {});
   if (patch.provider && !providers.PROVIDERS[patch.provider]) throw new Error('Unknown provider');
   for (const k of ['provider', 'model', 'effort', 'voiceReplies', 'voiceEngine', 'voice', 'handsFree', 'lan']) if (k in patch) s[k] = patch[k];
+  if (patch.ui && typeof patch.ui === 'object') {
+    const ok = { palette: /^[a-z]{2,12}$/, mode: /^(dark|light|auto)$/, size: /^(s|m|l|xl)$/, motion: /^(full|calm)$/ };
+    s.ui = { ...(s.ui || {}) };
+    for (const [k, re] of Object.entries(ok)) if (re.test(String(patch.ui[k] ?? ''))) s.ui[k] = patch.ui[k];
+  }
   // Keys are write-only: an empty string removes one, anything else replaces it.
   if (patch.keys) { s.keys ||= {}; for (const [p, v] of Object.entries(patch.keys)) if (providers.PROVIDERS[p] || p === 'elevenlabs') v ? (s.keys[p] = String(v).trim()) : delete s.keys[p]; }
   if (patch.baseUrls) { s.baseUrls ||= {}; for (const [p, v] of Object.entries(patch.baseUrls)) if (providers.PROVIDERS[p]) v ? (s.baseUrls[p] = String(v).trim()) : delete s.baseUrls[p]; }
@@ -25,7 +30,7 @@ export function setSettings(patch) {
 export const publicSettings = () => {
   const s = getSettings();
   return {
-    provider: s.provider, model: s.model, effort: s.effort, voiceReplies: s.voiceReplies, handsFree: !!s.handsFree,
+    provider: s.provider, model: s.model, effort: s.effort, voiceReplies: s.voiceReplies, handsFree: !!s.handsFree, ui: s.ui || null,
     voiceEngine: s.voiceEngine || 'auto', voice: s.voice || '', activeVoice: voiceEngine(s), stt: sttEngine(s), voices: VOICES, hasElevenKey: !!providers.keyFor(s, 'elevenlabs'),
     providers: Object.fromEntries(Object.entries(providers.PROVIDERS).map(([id, d]) => [id, { label: d.label, models: d.models, local: !!d.local, ready: providers.isReady(s, id), hasKey: !!providers.keyFor(s, id), base: providers.baseFor(s, id) }])),
   };
@@ -45,6 +50,10 @@ export function setNoteDone(id, done = true) {
   const list = notes(); const n = list.find(x => x.id === id);
   if (!n) throw new Error('no such note');
   n.done = done; save('notes.json', list); return n;
+}
+export function replaceNotes(list) {
+  const clean = (Array.isArray(list) ? list : []).slice(0, 200).map(n => ({ id: String(n.id || crypto.randomBytes(3).toString('hex')).slice(0, 12), text: String(n.text || '').slice(0, 300), done: !!n.done, at: Number(n.at) || Date.now() })).filter(n => n.text);
+  save('notes.json', clean); return clean.length;
 }
 export function deleteNote(id) { save('notes.json', notes().filter(x => x.id !== id)); }
 

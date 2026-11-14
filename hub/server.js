@@ -159,6 +159,28 @@ async function handler(req, res) {
       await setLan(!!on);
       return send(res, 200, { ...network(), canChange: true });
     }
+    // ---- save / load your whole setup ----
+    if (p === '/api/backup') {
+      const withKeys = url.searchParams.get('keys') === '1';
+      const { keys, apiKey, ...settings } = brain.getSettings();
+      let computer = null;
+      try { computer = await devices.callDevice(devices.selectedId(), 'get_config', {}); } catch {}
+      audit({ who: 'me', event: 'backup.saved', withKeys });
+      return send(res, 200, { type: 'aura-backup', version: 1, createdAt: new Date().toISOString(), hub: { settings: { ...settings, ...(withKeys ? { keys: keys || {} } : {}) }, notes: brain.notes() }, computer });
+    }
+    if (p === '/api/restore' && req.method === 'POST') {
+      const { backup: b, keys: useKeys } = await readBody(req, 2 * 1024 * 1024);
+      if (b?.type !== 'aura-backup') return send(res, 400, { error: "That file isn't an Aura backup." });
+      const st = b.hub?.settings || {};
+      const pick = ['provider', 'model', 'effort', 'voiceReplies', 'voiceEngine', 'voice', 'handsFree', 'ui'].reduce((o, k) => (k in st ? { ...o, [k]: st[k] } : o), {});
+      if (useKeys && st.keys && typeof st.keys === 'object') pick.keys = st.keys;
+      brain.setSettings(pick);
+      const notesRestored = Array.isArray(b.hub?.notes) ? brain.replaceNotes(b.hub.notes) : 0;
+      let computer = null;
+      if (b.computer?.spaces) { try { computer = await devices.callDevice(devices.selectedId(), 'apply_config', { spaces: b.computer.spaces }); } catch (e) { computer = { error: e.message }; } }
+      audit({ who: 'me', event: 'backup.loaded', keys: !!pick.keys, notes: notesRestored });
+      return send(res, 200, { ok: true, settings: Object.keys(pick), keys: !!pick.keys, notes: notesRestored, computer });
+    }
     if (p === '/api/connections') return send(res, 200, connections(network()));
     if (p === '/api/brief') return send(res, 200, await brain.brief({ tz: url.searchParams.get('tz') || undefined, force: url.searchParams.get('force') === '1', view: url.searchParams.get('view') || 'all' }));
     if (p === '/api/stt' && req.method === 'POST') {
@@ -210,7 +232,7 @@ async function handler(req, res) {
 
 function friendly(e) {
   const msg = String(e?.message || e);
-  if (/Could not resolve authentication|apiKey|x-api-key|authentication_error/i.test(msg)) return 'No Claude API key yet. Add one in Devices → Assistant.';
+  if (/Could not resolve authentication|apiKey|x-api-key|authentication_error/i.test(msg)) return 'No Claude API key yet. Add one in System → Assistant.';
   return msg.slice(0, 400);
 }
 

@@ -21,7 +21,7 @@ export const POLICY_DEFAULTS = {
 export const TOOL_POLICY = {
   get_overview: 'status', view_screen: 'screen', open_on_computer: 'open', draft_email: 'open',
   notify_computer: 'notify', lock_computer: 'notify', run_command: 'shell',
-  browser_tabs: 'browser_read', browser_read: 'browser_read', reconnect: 'browser_read', set_apps: 'status', set_space: 'status', browser_act: 'browser_act', slack_send: 'browser_act',
+  browser_tabs: 'browser_read', browser_read: 'browser_read', reconnect: 'browser_read', set_apps: 'status', set_space: 'status', get_config: 'status', apply_config: 'status', browser_act: 'browser_act', slack_send: 'browser_act',
 };
 
 const run = (cmd, args, { timeout = 6000 } = {}) => new Promise(resolve => {

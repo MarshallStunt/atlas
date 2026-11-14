@@ -153,6 +153,6 @@ async function openaiTurn({ s, provider, model, system, messages, tools, emit })
 export function turn(opts) {
   const def = PROVIDERS[opts.provider];
   if (!def) throw new Error('Unknown AI provider ' + opts.provider);
-  if (!isReady(opts.s, opts.provider)) throw new Error(`No API key for ${def.label} yet. Add one in Devices → Assistant.`);
+  if (!isReady(opts.s, opts.provider)) throw new Error(`No API key for ${def.label} yet. Add one in System → Assistant.`);
   return def.kind === 'anthropic' ? anthropicTurn(opts) : openaiTurn(opts);
 }

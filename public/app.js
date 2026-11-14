@@ -15,6 +15,35 @@ function visibleSpaces(snap) {
   return spaceView === 'all' ? list.filter(x => !x.private) : list.filter(x => x.id === spaceView);
 }
 
+/* ============================== theme ============================== */
+// Palettes: three accent colours that drive the glow, orb, buttons and gauges.
+const PALETTES = {
+  aurora: { name: 'Aurora', c: ['#22d3ee', '#a78bfa', '#f472b6'] },
+  ocean: { name: 'Ocean', c: ['#38bdf8', '#2dd4bf', '#818cf8'] },
+  sunset: { name: 'Sunset', c: ['#fb923c', '#f43f5e', '#facc15'] },
+  forest: { name: 'Forest', c: ['#4ade80', '#2dd4bf', '#a3e635'] },
+  royal: { name: 'Royal', c: ['#a78bfa', '#f472b6', '#60a5fa'] },
+  mono: { name: 'Mono', c: ['#e5e7eb', '#9ca3af', '#cbd5e1'] },
+};
+const UI_DEFAULT = { palette: 'aurora', mode: 'dark', size: 'm', motion: 'full' };
+let ui = (() => { try { return { ...UI_DEFAULT, ...JSON.parse(localStorage.getItem('aura.ui') || '{}') }; } catch { return { ...UI_DEFAULT }; } })();
+let orbColors = PALETTES.aurora.c;
+const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`; };
+function applyTheme(next) {
+  ui = { ...UI_DEFAULT, ...(next || ui) };
+  const root = document.documentElement, pal = PALETTES[ui.palette] || PALETTES.aurora;
+  orbColors = pal.c;
+  [['--cyan', 0], ['--violet', 1], ['--pink', 2]].forEach(([v, i]) => root.style.setProperty(v, pal.c[i]));
+  const light = ui.mode === 'light' || (ui.mode === 'auto' && matchMedia('(prefers-color-scheme: light)').matches);
+  root.dataset.mode = light ? 'light' : 'dark';
+  root.dataset.motion = ui.motion;
+  root.style.zoom = { s: '0.92', m: '1', l: '1.1', xl: '1.2' }[ui.size] || '1';
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', light ? '#f3f5fa' : '#04060c');
+  try { localStorage.setItem('aura.ui', JSON.stringify(ui)); } catch {}
+}
+applyTheme();
+matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => ui.mode === 'auto' && applyTheme());
+
 /* ============================== API ============================== */
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }, body: opts.body ? JSON.stringify(opts.body) : undefined });
@@ -84,14 +113,14 @@ function drawOrbs() {
     const w = c.width, h = c.height, cx = w / 2, cy = h / 2, R = w * 0.28;
     ctx.clearRect(0, 0, w, h);
     const g = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * 1.9);
-    g.addColorStop(0, `rgba(34,211,238,${0.18 + orb.level * 0.25})`); g.addColorStop(0.5, 'rgba(167,139,250,.08)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    g.addColorStop(0, rgba(orbColors[0], 0.18 + orb.level * 0.25)); g.addColorStop(0.5, rgba(orbColors[1], 0.08)); g.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
     // dark glass core, then three drifting colour lobes so the cyan / violet / pink stay distinct
     const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.05);
     core.addColorStop(0, '#101a33'); core.addColorStop(1, '#070b16');
     ctx.fillStyle = core; ctx.beginPath(); ctx.arc(cx, cy, R * 0.98, 0, Math.PI * 2); ctx.fill();
     ctx.globalCompositeOperation = 'lighter';
-    for (const [color, ph] of [['#22d3ee', 0], ['#8b5cf6', 2.1], ['#ec4899', 4.2]]) {
+    for (const [color, ph] of [[orbColors[0], 0], [orbColors[1], 2.1], [orbColors[2], 4.2]]) {
       const ox = cx + Math.cos(orb.t * 0.6 + ph) * R * 0.32, oy = cy + Math.sin(orb.t * 0.8 + ph) * R * 0.32;
       ctx.beginPath();
       const N = 72, amp = 0.06 + orb.level * 0.3;
@@ -108,7 +137,7 @@ function drawOrbs() {
     }
     // rim light
     ctx.globalCompositeOperation = 'source-over';
-    ctx.strokeStyle = `rgba(165,243,252,${0.25 + orb.level * 0.4})`; ctx.lineWidth = Math.max(1, w / 200);
+    ctx.strokeStyle = rgba(orbColors[0], 0.3 + orb.level * 0.4); ctx.lineWidth = Math.max(1, w / 200);
     ctx.beginPath(); ctx.arc(cx, cy, R * (0.95 + orb.level * 0.08), 0, Math.PI * 2); ctx.stroke();
     ctx.globalCompositeOperation = 'source-over';
     const hl = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.4, 0, cx - R * 0.35, cy - R * 0.4, R * 0.6);
@@ -117,13 +146,13 @@ function drawOrbs() {
     if (orb.state === 'thinking') {
       ctx.lineWidth = Math.max(1.5, w / 160); ctx.lineCap = 'round';
       for (let k = 0; k < 3; k++) {
-        ctx.strokeStyle = ['rgba(34,211,238,.9)', 'rgba(167,139,250,.8)', 'rgba(244,114,182,.7)'][k];
+        ctx.strokeStyle = rgba(orbColors[k], [0.9, 0.8, 0.7][k]);
         ctx.beginPath(); const s = orb.t * (1.6 + k * 0.7) * (k % 2 ? -1 : 1);
         ctx.arc(cx, cy, R * (1.25 + k * 0.13), s, s + 1.1 + k * 0.4); ctx.stroke();
       }
     }
     if (orb.state === 'listening') {
-      ctx.strokeStyle = `rgba(34,211,238,${0.25 + orb.level * 0.5})`; ctx.lineWidth = Math.max(1, w / 220);
+      ctx.strokeStyle = rgba(orbColors[0], 0.25 + orb.level * 0.5); ctx.lineWidth = Math.max(1, w / 220);
       for (let k = 0; k < 2; k++) { const p = ((orb.t * 0.8 + k * 0.5) % 1); ctx.globalAlpha = 1 - p; ctx.beginPath(); ctx.arc(cx, cy, R * (1.1 + p * 0.7), 0, Math.PI * 2); ctx.stroke(); }
       ctx.globalAlpha = 1;
     }
@@ -365,6 +394,7 @@ async function showMain() {
 async function refresh(background = false) {
   try { state = await api('/api/state'); } catch { return; }
   voiceOn = state.settings.voiceReplies; handsFree = state.settings.handsFree;
+  if (state.settings.ui && JSON.stringify({ ...UI_DEFAULT, ...state.settings.ui }) !== JSON.stringify(ui)) applyTheme(state.settings.ui);
   $('#speak-toggle').setAttribute('aria-pressed', voiceOn); $('#hands-free').setAttribute('aria-pressed', handsFree);
   if (orb.state === 'idle') setOrb('idle');
   renderHeader(); renderApprovals();
@@ -462,7 +492,7 @@ function renderNow() {
     const live = next.at <= now, mins = Math.max(0, Math.round((next.at - now) / 60000));
     const frac = live ? 1 : Math.max(0.03, 1 - Math.min(mins, 60) / 60), C = 2 * Math.PI * 40;
     parts.push(`<div class="panel"><div class="panel-head"><span class="label">${live ? '<span class="live-tag">● LIVE</span>' : 'Next up'}</span>${comp.inCall ? `<span class="live-tag">IN ${esc(comp.inCall).toUpperCase()} CALL</span>` : ''}</div>
-      <div class="meet"><div class="ring"><svg viewBox="0 0 92 92"><defs><linearGradient id="ringGrad"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs><circle class="track" cx="46" cy="46" r="40"/><circle class="bar" cx="46" cy="46" r="40" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - frac)}"/></svg>
+      <div class="meet"><div class="ring"><svg viewBox="0 0 92 92"><defs><linearGradient id="ringGrad"><stop offset="0" stop-color="${orbColors[0]}"/><stop offset="1" stop-color="${orbColors[1]}"/></linearGradient></defs><circle class="track" cx="46" cy="46" r="40"/><circle class="bar" cx="46" cy="46" r="40" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - frac)}"/></svg>
         <div class="center"><div><b>${live ? 'NOW' : mins >= 60 ? Math.round(mins / 60) + 'h' : mins}</b><small>${live ? 'started' : mins >= 60 ? 'hours' : 'min'}</small></div></div></div>
         <div><h3>${esc(next.title)}</h3><div class="when">${esc(clock(next.at))}${isToday(next.at) ? '' : ' · ' + esc(next.date)}</div></div></div>
       <div class="row-actions"><button class="btn glow sm" data-open="${esc(next.link)}">Open on computer</button><button class="btn sm" data-ask="${esc(`Prep me for my meeting "${next.title}": what is it about, and is there anything in my email or Slack I should know first?`)}">Prep me</button><a class="btn sm ghost" href="${safeHref(next.link)}" target="_blank" rel="noopener">Open here</a></div></div>`);
@@ -514,9 +544,9 @@ function renderNow() {
     parts.push(`<div class="panel"><div class="panel-head"><span class="label">${esc(comp.host)} · ${esc(comp.platform)}</span><span class="mono dim" style="font-size:11px">UP ${esc(comp.uptimeHours)}H</span></div>
       <div class="hud">
         ${bt ? gauge(bt.percent / 100, bt.onAC ? 'charging' : 'battery', bt.percent < 20 ? '#fb7185' : '#a3e635', bt.percent + '%') : ''}
-        ${gauge(comp.memoryUsedPct / 100, 'memory', comp.memoryUsedPct > 90 ? '#fbbf24' : '#22d3ee', comp.memoryUsedPct + '%')}
-        ${dk ? gauge(1 - dk.freeGB / dk.totalGB, 'disk free', '#a78bfa', Math.round(dk.freeGB) + 'G') : ''}
-        ${comp.idleSeconds == null ? '' : gauge(comp.idleSeconds < 60 ? 1 : Math.max(0.05, 1 - comp.idleSeconds / 3600), 'presence', '#f472b6', comp.idleSeconds < 60 ? 'ON' : 'AWAY')}
+        ${gauge(comp.memoryUsedPct / 100, 'memory', comp.memoryUsedPct > 90 ? '#fbbf24' : orbColors[0], comp.memoryUsedPct + '%')}
+        ${dk ? gauge(1 - dk.freeGB / dk.totalGB, 'disk free', orbColors[1], Math.round(dk.freeGB) + 'G') : ''}
+        ${comp.idleSeconds == null ? '' : gauge(comp.idleSeconds < 60 ? 1 : Math.max(0.05, 1 - comp.idleSeconds / 3600), 'presence', orbColors[2], comp.idleSeconds < 60 ? 'ON' : 'AWAY')}
       </div>
       <div class="kv" style="margin-top:10px"><span>Front</span><span>${esc(comp.frontWindow || '—')}</span></div>
       <div class="kv"><span>User</span><span>${esc(idle)}</span></div>
@@ -656,6 +686,15 @@ function renderSystem() {
       <div id="test-provider-results"></div>
       <p class="dim" style="font-size:13px">Keys stay on the hub and are never sent back to this page.</p></div>
 
+    <div class="panel" id="sec-look">${lookPanel()}</div>
+
+    <div class="panel" id="sec-backup"><div class="panel-head"><span class="label">Save & load</span></div>
+      <p class="dim" style="font-size:13px;margin:0 0 10px">Save your setup to a file (assistant, voice, look, notes, and this computer's spaces & apps), and load it on a new install or another hub.</p>
+      <label class="chip toggle" style="cursor:pointer"><input type="checkbox" id="bk-keys" style="display:none"><span class="led"></span>Include API keys</label>
+      <p class="dim" style="font-size:12px;margin:6px 0 10px">Only include keys if you'll keep the file somewhere safe: anyone with it can use your AI accounts.</p>
+      <div class="row-actions" style="margin:0"><button class="btn glow sm" id="bk-save">⇩ Save to file</button><button class="btn sm" id="bk-load">⇧ Load from file</button><input type="file" id="bk-file" accept="application/json,.json" hidden></div>
+      <div id="bk-result"></div></div>
+
     <div class="panel"><div class="panel-head"><span class="label">Activity</span><button class="btn sm" id="load-audit">Show</button></div><div id="audit"></div></div>
     <div class="row-actions" style="justify-content:center"><button class="btn danger sm" id="logout">Sign out</button></div>`;
   providerFields(true);
@@ -669,6 +708,53 @@ async function reconnectAll(btn) {
   catch (e) { toast(e.message); }
   setTimeout(async () => { try { await api('/api/action', { method: 'POST', body: { tool: 'get_overview' } }); } catch {} loadConnections(); btn.disabled = false; btn.textContent = label; }, 2500);
 }
+
+/* ---------- Look: palette, light/dark, size, motion (saved on the hub, shared by all your devices) ---------- */
+function lookPanel() {
+  const seg = (key, opts) => `<div class="seg" data-uikey="${key}">${opts.map(([v, l]) => `<button data-uival="${v}" class="${ui[key] === v ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+  return `<div class="panel-head"><span class="label">Look</span></div>
+    <div class="swatches">${Object.entries(PALETTES).map(([id, p]) => `<button class="swatch ${ui.palette === id ? 'on' : ''}" data-palette="${id}" aria-label="${esc(p.name)}"><span style="background:linear-gradient(135deg, ${p.c[0]}, ${p.c[1]} 55%, ${p.c[2]})"></span>${esc(p.name)}</button>`).join('')}</div>
+    <div class="look-row"><span class="dim">Mode</span>${seg('mode', [['dark', 'Dark'], ['light', 'Light'], ['auto', 'Auto']])}</div>
+    <div class="look-row"><span class="dim">Text size</span>${seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L'], ['xl', 'XL']])}</div>
+    <div class="look-row"><span class="dim">Motion</span>${seg('motion', [['full', 'Full'], ['calm', 'Calm']])}</div>`;
+}
+async function setLook(patch) {
+  applyTheme({ ...ui, ...patch });
+  $('#sec-look').innerHTML = lookPanel();
+  try { await api('/api/settings', { method: 'POST', body: { ui } }); } catch (e) { toast(e.message); }
+}
+$('#view-system').addEventListener('click', async e => {
+  const t = e.target;
+  const pal = t.closest('[data-palette]'); if (pal) return setLook({ palette: pal.dataset.palette });
+  const v = t.closest('[data-uival]'); if (v && v.closest('[data-uikey]')) return setLook({ [v.closest('[data-uikey]').dataset.uikey]: v.dataset.uival });
+  if (t.closest('#bk-keys')) return;
+  if (t.closest('.chip.toggle') && t.closest('#sec-backup')) { const cb = $('#bk-keys'); cb.checked = !cb.checked; t.closest('.chip.toggle').setAttribute('aria-pressed', cb.checked); return; }
+  if (t.id === 'bk-save') {
+    try {
+      const data = await api('/api/backup' + ($('#bk-keys').checked ? '?keys=1' : ''));
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      a.download = `aura-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      toast(data.computer ? 'Saved' : 'Saved (the computer was offline, so its spaces weren\'t included)');
+    } catch (err) { toast(err.message); }
+  }
+  if (t.id === 'bk-load') $('#bk-file').click();
+});
+$('#view-system').addEventListener('change', async e => {
+  if (e.target.id !== 'bk-file' || !e.target.files[0]) return;
+  try {
+    const backup = JSON.parse(await e.target.files[0].text());
+    if (backup.type !== 'aura-backup') throw new Error("That file isn't an Aura backup.");
+    const hasKeys = !!backup.hub?.settings?.keys && Object.keys(backup.hub.settings.keys).length > 0;
+    const useKeys = hasKeys && confirm('This backup includes API keys. Load them too? (Cancel keeps your current keys.)');
+    if (!confirm(`Load the backup from ${new Date(backup.createdAt).toLocaleString()}? It replaces your settings, look and notes${backup.computer ? ', and updates spaces & apps with the same names' : ''}.`)) return;
+    const r = await api('/api/restore', { method: 'POST', body: { backup, keys: useKeys } });
+    $('#bk-result').innerHTML = `<p class="dim" style="font-size:13px">Loaded: settings${r.keys ? ' + API keys' : ''}, ${r.notes} notes${r.computer?.applied ? `, spaces: ${esc(r.computer.applied.join(', ') || 'none')}` : ''}${r.computer?.skipped?.length ? ` (not on this computer: ${esc(r.computer.skipped.join(', '))})` : ''}${r.computer?.error ? ` (computer: ${esc(r.computer.error)})` : ''}.</p>`;
+    await refresh(); toast('Backup loaded');
+  } catch (err) { toast(err.message); }
+  e.target.value = '';
+});
 
 /* ---------- Apps per computer ---------- */
 let appsSpace = null; // which space the Apps panel is showing
