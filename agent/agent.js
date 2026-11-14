@@ -37,11 +37,11 @@ const allowed = key => policy()[key]?.on;
 /* ---------------- app choices for this computer ---------------- */
 function appChoices() {
   const saved = readJson('apps.json', {});
-  return { apps: Object.fromEntries(APPS.map(a => [a.id, saved.apps?.[a.id] !== false])), otherSites: saved.otherSites !== false };
+  return { apps: Object.fromEntries(APPS.map(a => [a.id, saved.apps?.[a.id] ?? a.def !== false])), otherSites: saved.otherSites !== false };
 }
 // What the browser extension needs to know: which apps to sync and which sites it may read.
 const bridgeConfig = () => { const c = appChoices(); return { apps: c.apps, otherSites: c.otherSites, matchers: Object.fromEntries(APPS.map(a => [a.id, a.match])) }; };
-const CORE = { gmail: 'gmail', calendar: 'gcal', slack: 'slack' }; // inbox key -> app id
+const CORE = { gmail: 'gmail', calendar: 'gcal', slack: 'slack', outlook: 'outlook' }; // inbox key -> app id
 
 /* ---------------- bridge state (Gmail / Calendar / Slack from Chrome) ---------------- */
 let bridgeToken = fs.existsSync(f('bridge-token')) ? fs.readFileSync(f('bridge-token'), 'utf8').trim() : '';
@@ -83,6 +83,9 @@ function overviewInbox() {
     connected: now - (inbox.receivedAt || 0) < 10 * 60 * 1000, updated: new Date(inbox.receivedAt).toISOString(),
     calendar: on('calendar') && inbox.calendar ? { events } : null,
     gmail: on('gmail') && inbox.gmail ? { unread: inbox.gmail.unread, latest: (inbox.gmail.entries || []).slice(0, 15) } : null,
+    outlook: on('outlook') && inbox.outlook ? { who: inbox.outlook.who, unread: inbox.outlook.unread, latest: (inbox.outlook.entries || []).slice(0, 15),
+      events: (inbox.outlook.events || []).filter(e => !e.at || (e.at > now - 3600e3 && e.at < now + 4 * 864e5)).slice(0, 30), calendarError: inbox.outlook.calendarError || null,
+      ...(inbox.outlook.raw ? { raw: inbox.outlook.raw } : {}) } : null,
     slack: on('slack') && inbox.slack ? { team: inbox.slack.team, mentions: (inbox.slack.mentions || []).filter(m => m.at > now - 48 * 3600e3).slice(0, 15) } : null,
     openTabs: (inbox.tabs || []).filter(t => urlAllowed(t.url, ch).ok).slice(0, 30),
     errors: Object.fromEntries(Object.entries(inbox.errors || {}).filter(([k]) => !CORE[k] || on(k))),

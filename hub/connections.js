@@ -12,7 +12,6 @@ const goto = (label, section) => ({ type: 'goto', label, section });
 
 // Web apps Aura can read through the browser when they're open in a tab.
 const WEB_APPS = [
-  ['Outlook', /outlook\.(office|live|office365)\.com/, 'https://outlook.office.com/mail/'],
   ['Microsoft Teams', /teams\.(microsoft|live)\.com/, 'https://teams.microsoft.com/'],
   ['Jira', /atlassian\.net\/(jira|browse|projects)|atlassian\.net\/secure/, null],
   ['Confluence', /atlassian\.net\/wiki/, null],
@@ -55,7 +54,7 @@ export function connections(net = {}) {
   const appsOn = Object.fromEntries((snap?.apps?.list || []).map(a => [a.id, a.on]));
   const app = (name, key, data, okText, url) => {
     if (!dev) return;
-    const id = { gmail: 'gmail', calendar: 'gcal', slack: 'slack' }[key];
+    const id = { gmail: 'gmail', calendar: 'gcal', slack: 'slack', outlook: 'outlook' }[key];
     if (appsOn[id] === false) return add('Apps', name, 'off', 'Turned off for this computer.', goto('Change', 'apps'));
     if (!caps.browser_read) return add('Apps', name, 'off', 'Off: reading web apps is switched off on the computer.');
     if (errs[key] && /^SIGN_IN:/.test(errs[key])) return add('Apps', name, 'error', errs[key].replace(/^SIGN_IN:\s*/, '') + ' Aura can\'t sign in for you.', open(`Open ${name} to sign in`, url));
@@ -67,6 +66,7 @@ export function connections(net = {}) {
   };
   app('Gmail', 'gmail', inbox.gmail, d => `${d.unread} unread`, 'https://mail.google.com/');
   app('Google Calendar', 'calendar', inbox.calendar, d => `${(d.events || []).length} upcoming events`, 'https://calendar.google.com/');
+  if (appsOn.outlook === true) app('Outlook (mail & calendar)', 'outlook', inbox.outlook, d => `${d.who ? d.who + ' · ' : ''}${d.unread} unread · ${(d.events || []).length} events${d.calendarError ? ' · calendar: ' + d.calendarError.replace(/^SIGN_IN:\s*/, '') : ''}`, 'https://outlook.office.com/mail/');
   app('Slack', 'slack', inbox.slack, d => `${d.team || 'workspace'} · ${(d.mentions || []).length} recent mentions`, 'https://app.slack.com/client');
 
   // ---- other web apps, readable on request when open ----

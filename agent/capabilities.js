@@ -234,7 +234,7 @@ export const APPS = [
   { id: 'gmail', name: 'Gmail', kind: 'mail', synced: true, match: 'mail\\.google\\.com' },
   { id: 'gcal', name: 'Google Calendar', kind: 'calendar', synced: true, match: 'calendar\\.google\\.com' },
   { id: 'slack', name: 'Slack', kind: 'chat', synced: true, match: '(^|\\.)slack\\.com' },
-  { id: 'outlook', name: 'Outlook (mail & calendar)', kind: 'mail', match: 'outlook\\.(office|office365|live)\\.com' },
+  { id: 'outlook', name: 'Outlook (mail & calendar)', kind: 'mail', synced: true, def: false, match: 'outlook\\.(office|office365|live)\\.com|outlook\\.cloud\\.microsoft' },
   { id: 'teams', name: 'Microsoft Teams', kind: 'chat', match: 'teams\\.(microsoft|live|cloud\\.microsoft)\\.com|teams\\.cloud\\.microsoft' },
   { id: 'gdrive', name: 'Google Drive & Docs', kind: 'docs', match: '(drive|docs|sheets|slides)\\.google\\.com' },
   { id: 'jira', name: 'Jira', kind: 'work', match: 'atlassian\\.net/(jira|browse|projects|secure)' },

@@ -53,6 +53,12 @@ Open the `https://<computer>.<tailnet>.ts.net` address on your phone, sign in wi
 **Share → Add to Home Screen** so it opens like an app. Voice input needs HTTPS, which Tailscale provides.
 If POSTs get blocked as cross-site behind the proxy, start the hub with `AURA_TAILNET_HOST=<computer>.<tailnet>.ts.net`.
 
+## Apps per computer
+
+In **System → Apps**, each computer chooses which apps Aura uses. Gmail, Google Calendar and Slack are synced to the dashboard by default.
+**Outlook (Microsoft 365, e.g. school or work accounts)** is off by default. Turn it on for the computer where you use it: Aura keeps two pinned Outlook tabs (inbox and calendar) in that browser and shows the mail and meetings alongside Gmail.
+Apps that are off are never synced, opened or read.
+
 ## AI providers
 
 Choose under **Devices → Assistant**: Anthropic Claude (default `claude-opus-5-5`), OpenAI, Google Gemini,

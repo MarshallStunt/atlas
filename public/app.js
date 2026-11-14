@@ -413,7 +413,8 @@ function renderNow() {
   const d = device(), snap = state?.snapshot;
   const parts = [];
   const comp = snap?.computer || {}, inbox = snap?.inbox || {};
-  const unread = inbox.gmail?.unread || 0, mentions = (inbox.slack?.mentions || []).length;
+  const unread = (inbox.gmail?.unread || 0) + (inbox.outlook?.unread || 0), mentions = (inbox.slack?.mentions || []).length;
+  const allEvents = [...(inbox.calendar?.events || []), ...(inbox.outlook?.events || [])].sort((a, b) => (a.at || 0) - (b.at || 0));
   parts.push(`<div class="hello"><h1>${greeting()}<span class="grad-text">.</span></h1>
     <div class="sub">${esc(new Date().toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }))}${connData && !connData.error ? ` · <button class="conn-chip ${((connData.counts.error || 0) + (connData.counts.warn || 0)) ? 'bad' : ''}" data-goto="system">${((connData.counts.error || 0) + (connData.counts.warn || 0)) ? ((connData.counts.error || 0) + (connData.counts.warn || 0)) + ' to fix' : 'all connected'}</button>` : ''}${snap ? ` · ${unread} unread · ${mentions} mentions` : ''}</div></div>`);
 
@@ -437,7 +438,7 @@ function renderNow() {
 
   // Next meeting with countdown ring
   const now = Date.now();
-  const timed = (inbox.calendar?.events || []).filter(e => e.at && !e.allDay);
+  const timed = allEvents.filter(e => e.at && !e.allDay);
   const next = timed.find(e => e.at > now - 15 * 60000);
   if (next) {
     const live = next.at <= now, mins = Math.max(0, Math.round((next.at - now) / 60000));
@@ -450,8 +451,8 @@ function renderNow() {
   }
 
   // Timeline
-  const today = (inbox.calendar?.events || []).filter(e => e.at && isToday(e.at));
-  if (inbox.calendar) {
+  const today = allEvents.filter(e => e.at && isToday(e.at));
+  if (inbox.calendar || inbox.outlook) {
     let nowPlaced = false;
     const rows = today.map(e => {
       let pre = '';
@@ -463,15 +464,19 @@ function renderNow() {
   }
 
   // Inbox (mail / chat)
-  const mails = inbox.gmail?.latest || [], chats = inbox.slack?.mentions || [];
-  if (!inbox.gmail && inboxTab === 'mail') inboxTab = 'chat';
-  if (!inbox.slack && inboxTab === 'chat') inboxTab = 'mail';
-  const list = inboxTab === 'mail'
-    ? mails.slice(0, 7).map((m, i) => `<div class="msg-item" data-mail="${i}"><div class="avatar" style="background:${avatarColor(m.from || m.fromEmail)}">${esc(initials(m.from || m.fromEmail))}</div><div style="min-width:0"><div class="who">${esc(m.from || m.fromEmail)}</div><div class="subj">${esc(m.subject)}</div><div class="snip">${esc(m.snippet)}</div></div><div class="ago">${esc(short(m.at))}</div></div>`).join('') || '<div class="empty">Inbox zero. ✨</div>'
-    : chats.slice(0, 7).map((m, i) => `<div class="msg-item" data-chat="${i}"><div class="avatar" style="background:${avatarColor(m.user)}">${esc(initials(m.user))}</div><div style="min-width:0"><div class="who">${esc(m.user)} <span class="dim" style="font-weight:400">${m.isDm ? '· DM' : m.channel ? '· #' + esc(m.channel) : ''}</span></div><div class="snip" style="color:var(--text)">${esc(m.text)}</div></div><div class="ago">${esc(short(m.at))}</div></div>`).join('') || '<div class="empty">No mentions in the last 2 days.</div>';
-  if (inbox.gmail || inbox.slack) parts.push(`<div class="panel"><div class="panel-head"><div class="seg">${inbox.gmail ? `<button data-seg="mail" class="${inboxTab === 'mail' ? 'on' : ''}">Mail <b>${unread}</b></button>` : ''}${inbox.slack ? `<button data-seg="chat" class="${inboxTab === 'chat' ? 'on' : ''}">Slack <b>${mentions}</b></button>` : ''}</div>
-    <button class="btn sm" data-ask="${inboxTab === 'mail' ? 'Go through my unread email: who needs what from me, and what can wait?' : 'What do people need from me on Slack? Most urgent first.'}">${icon('spark', 13)} Triage</button></div>
-    ${list}</div>`);
+  // Mail sources on this computer: Gmail and/or Outlook, plus Slack.
+  const mailRow = (m, i, src) => `<div class="msg-item" data-mail="${i}" data-src="${src}"><div class="avatar" style="background:${avatarColor(m.from || m.fromEmail)}">${esc(initials(m.from || m.fromEmail))}</div><div style="min-width:0"><div class="who">${m.unread ? '<span class="unread-dot"></span>' : ''}${esc(m.from || m.fromEmail)}</div><div class="subj">${esc(m.subject)}</div><div class="snip">${esc(m.snippet)}</div></div><div class="ago">${esc(short(m.at))}</div></div>`;
+  const tabs = [
+    inbox.gmail && { id: 'mail', label: inbox.outlook ? 'Gmail' : 'Mail', n: inbox.gmail.unread, html: (inbox.gmail.latest || []).slice(0, 7).map((m, i) => mailRow(m, i, 'gmail')).join('') || '<div class="empty">Inbox zero. ✨</div>', ask: 'Go through my unread Gmail: who needs what from me, and what can wait?' },
+    inbox.outlook && { id: 'outlook', label: inbox.gmail ? 'Outlook' : 'Mail', n: inbox.outlook.unread, html: (inbox.outlook.latest || []).slice(0, 7).map((m, i) => mailRow(m, i, 'outlook')).join('') || (inbox.outlook.raw ? `<div class="empty">Outlook is open but its list couldn't be read. Ask Aura about it instead.</div>` : '<div class="empty">Inbox zero. ✨</div>'), ask: 'Go through my Outlook inbox: who needs what from me, and what can wait?' },
+    inbox.slack && { id: 'chat', label: 'Slack', n: mentions, html: (inbox.slack.mentions || []).slice(0, 7).map((m, i) => `<div class="msg-item" data-chat="${i}"><div class="avatar" style="background:${avatarColor(m.user)}">${esc(initials(m.user))}</div><div style="min-width:0"><div class="who">${esc(m.user)} <span class="dim" style="font-weight:400">${m.isDm ? '· DM' : m.channel ? '· #' + esc(m.channel) : ''}</span></div><div class="snip" style="color:var(--text)">${esc(m.text)}</div></div><div class="ago">${esc(short(m.at))}</div></div>`).join('') || '<div class="empty">No mentions in the last 2 days.</div>', ask: 'What do people need from me on Slack? Most urgent first.' },
+  ].filter(Boolean);
+  if (tabs.length) {
+    const cur = tabs.find(t => t.id === inboxTab) || tabs[0]; inboxTab = cur.id;
+    parts.push(`<div class="panel"><div class="panel-head"><div class="seg">${tabs.map(t => `<button data-seg="${t.id}" class="${t.id === cur.id ? 'on' : ''}">${t.label} <b>${t.n ?? 0}</b></button>`).join('')}</div>
+    <button class="btn sm" data-ask="${esc(cur.ask)}">${icon('spark', 13)} Triage</button></div>
+    ${cur.html}</div>`);
+  }
 
   const errs = Object.entries(inbox.errors || {});
   if (inbox.connected === false || inbox.note) parts.push(`<div class="panel"><div class="label">Web apps</div><p class="dim">${esc(inbox.note || 'The browser extension hasn\'t sent fresh data. Open Chrome, Edge or Brave on the computer.')}</p></div>`);
@@ -513,7 +518,7 @@ function itemSheet(kind, m) {
   const title = kind === 'mail' ? m.subject : (m.isDm ? 'Direct message' : '#' + m.channel);
   const body = kind === 'mail' ? m.snippet : m.text;
   const replyAsk = kind === 'mail'
-    ? `Draft a reply to ${who}${m.fromEmail ? ` <${m.fromEmail}>` : ''} about "${m.subject}". Read the email first, keep it short, and open it as a draft on my computer.`
+    ? `Draft a reply to ${who}${m.fromEmail ? ` <${m.fromEmail}>` : ''} about "${m.subject}"${m.source === 'outlook' ? ' (this is in my Outlook / nl.edu inbox; open the draft in Outlook)' : ''}. Read the email first, keep it short, and open it as a draft on my computer.`
     : `Reply to ${who} on Slack about: "${String(m.text).slice(0, 160)}". Suggest a short reply and send it after I approve.`;
   const sumAsk = kind === 'mail'
     ? `Open and read the email "${m.subject}" from ${who}, summarize it in two sentences and tell me what they need.`
@@ -538,7 +543,7 @@ document.addEventListener('click', e => {
 $('#view-now').addEventListener('click', async e => {
   const t = e.target;
   const seg = t.closest('[data-seg]'); if (seg) { inboxTab = seg.dataset.seg; return renderNow(); }
-  const mail = t.closest('[data-mail]'); if (mail) return itemSheet('mail', state.snapshot.inbox.gmail.latest[mail.dataset.mail]);
+  const mail = t.closest('[data-mail]'); if (mail) return itemSheet('mail', state.snapshot.inbox[mail.dataset.src === 'outlook' ? 'outlook' : 'gmail'].latest[mail.dataset.mail]);
   const chat = t.closest('[data-chat]'); if (chat) return itemSheet('chat', state.snapshot.inbox.slack.mentions[chat.dataset.chat]);
   if (t.closest('[data-brief-refresh]')) return loadBrief(true);
   const bi = t.closest('[data-brief]');

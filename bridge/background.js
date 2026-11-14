@@ -211,6 +211,106 @@ async function slackTabRun(job) {
   return result;
 }
 
+/* ---------- Outlook (Microsoft 365): read from Aura's own pinned Outlook tabs ----------
+   Outlook has no simple feed, so Aura keeps two pinned tabs (inbox and work-week calendar) and reads
+   what Outlook shows, using its accessibility labels. Nothing is stored except what's sent to the agent. */
+const MS_SIGN_IN = /login\.microsoftonline\.com|login\.live\.com|login\.microsoft\.com/i;
+async function ownTab(key, url) {
+  const stored = (await chrome.storage.local.get('ownTabs')).ownTabs || {};
+  let tab = stored[key] && await chrome.tabs.get(stored[key]).catch(() => null);
+  let fresh = false;
+  if (!tab) {
+    tab = await chrome.tabs.create({ url, active: false, pinned: true });
+    await chrome.storage.local.set({ ownTabs: { ...stored, [key]: tab.id } });
+    fresh = true;
+  } else if (tab.discarded || !String(tab.url || '').includes(new URL(url).pathname.split('/')[1]) || Date.now() - (stored[key + ':loaded'] || 0) > 30 * 60 * 1000) {
+    await chrome.tabs.update(tab.id, { url }); fresh = true; // asleep, wandered off, or 30 min old: reload
+  }
+  if (fresh) { await waitLoaded(tab.id, 40000); await chrome.storage.local.set({ ownTabs: { ...((await chrome.storage.local.get('ownTabs')).ownTabs || {}), [key]: tab.id, [key + ':loaded']: Date.now() } }); }
+  tab = await chrome.tabs.get(tab.id);
+  if (MS_SIGN_IN.test(tab.url || '')) throw new Error("SIGN_IN: you're signed out of Outlook. Sign in once in the pinned Outlook tab.");
+  return tab;
+}
+// Runs inside the Outlook inbox tab.
+async function readOutlookMail() {
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  let rows = [];
+  for (let i = 0; i < 30; i++) {
+    rows = [...document.querySelectorAll('[role="listbox"] [role="option"], div[data-convid]')];
+    if (rows.length) break;
+    if (document.querySelector('[role="listbox"]') && /no items|nothing in folder|all done/i.test(document.body.innerText)) break;
+    await wait(500);
+  }
+  const TIME = /^(\d{1,2}:\d{2}(\s?[AP]M)?|yesterday|(mon|tue|wed|thu|fri|sat|sun)\w*( \d{1,2}[\/.]\d{1,2}(?:[\/.]\d{2,4})?| \d{1,2}:\d{2}(\s?[AP]M)?)?|\d{1,2}[\/.]\d{1,2}([\/.]\d{2,4})?|\w{3,9} \d{1,2}(, \d{4})?)$/i;
+  const entries = [], seen = new Set();
+  for (const el of rows.slice(0, 40)) {
+    const label = el.getAttribute('aria-label') || '';
+    const lines = el.innerText.split('\n').map(x => x.trim()).filter(x => x && x.length > 1);
+    if (!lines.length) continue;
+    const ti = lines.findIndex((l, i) => i > 0 && TIME.test(l));
+    const from = lines[0], subject = (ti === 1 ? lines[2] : lines[1]) || '';
+    const time = ti > 0 ? lines[ti] : '';
+    const rest = lines.filter((l, i) => i > 1 && i !== ti && l !== subject).join(' ');
+    const key = from + '|' + subject + '|' + time; if (seen.has(key)) continue; seen.add(key);
+    entries.push({ from, subject, time, snippet: rest.slice(0, 240), unread: /^unread\b/i.test(label) || /\bunread\b/i.test(label.slice(0, 40)) });
+  }
+  let unread = null;
+  const folder = [...document.querySelectorAll('[role="treeitem"]')].find(n => /^\s*inbox\b/i.test(n.getAttribute('aria-label') || n.innerText || ''));
+  if (folder) { const m = (folder.getAttribute('aria-label') || folder.innerText).match(/(\d+)\s*(unread)?/i); if (m) unread = Number(m[1]); }
+  if (unread == null) unread = entries.filter(e => e.unread).length;
+  const who = (document.title.match(/^Mail\s*-\s*(.+?)\s*-\s*Outlook/i) || [])[1] || '';
+  return { ok: true, who, unread, entries, raw: entries.length ? '' : (document.querySelector('[role="main"]')?.innerText || '').slice(0, 2500) };
+}
+// Runs inside the Outlook calendar tab (work week view).
+async function readOutlookCalendar() {
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const T = '(\\d{1,2}:\\d{2}(?:\\s?[AP]M)?)';
+  const timed = new RegExp(`^(.*?),\\s*${T}\\s+(?:to|-|–)\\s+${T},\\s*(?:\\w+,\\s*)?(\\w+ \\d{1,2},? \\d{4})`, 'i');
+  const allDay = /^(.*?),\s*all day event,\s*(?:\w+,\s*)?(\w+ \d{1,2},? \d{4})/i;
+  let labels = [];
+  for (let i = 0; i < 30; i++) {
+    labels = [...document.querySelectorAll('[role="button"][aria-label], [data-calitemid][aria-label]')].map(e => e.getAttribute('aria-label'));
+    if (labels.some(l => timed.test(l) || allDay.test(l)) || (i > 10 && document.querySelector('[role="grid"], [role="main"]'))) break;
+    await wait(500);
+  }
+  const events = [], seen = new Set();
+  for (const l of labels) {
+    let m = l.match(timed), ev = null;
+    if (m) ev = { title: m[1], date: m[4], time: m[2], end: m[3], allDay: false, info: l.slice(m[0].length).replace(/^,\s*/, '').slice(0, 160) };
+    else if ((m = l.match(allDay))) ev = { title: m[1], date: m[2], time: '', allDay: true, info: '' };
+    if (!ev || seen.has(ev.title + ev.date + ev.time)) continue;
+    seen.add(ev.title + ev.date + ev.time); events.push(ev);
+  }
+  return { ok: true, events };
+}
+async function outlook() {
+  const base = 'https://outlook.office.com';
+  const mailTab = await ownTab('Outlook mail', base + '/mail/inbox');
+  const [{ result: mail } = {}] = await chrome.scripting.executeScript({ target: { tabId: mailTab.id }, func: readOutlookMail });
+  if (!mail?.ok) throw new Error("couldn't read the Outlook inbox; retrying next minute");
+  const now = new Date();
+  const when = t => {
+    if (!t) return null;
+    if (/^\d{1,2}:\d{2}/.test(t)) { const d = Date.parse(`${now.toDateString()} ${t}`); return isNaN(d) ? null : d; }
+    if (/^yesterday/i.test(t)) return now.getTime() - 864e5;
+    const d = Date.parse(/\d{4}/.test(t) ? t : `${t} ${now.getFullYear()}`); return isNaN(d) ? null : d;
+  };
+  let events = [], calError = null;
+  try {
+    const calTab = await ownTab('Outlook calendar', base + '/calendar/view/workweek');
+    const [{ result: cal } = {}] = await chrome.scripting.executeScript({ target: { tabId: calTab.id }, func: readOutlookCalendar });
+    events = (cal?.events || []).map(e => {
+      const at = e.allDay ? Date.parse(e.date) : Date.parse(`${e.date} ${e.time}`);
+      return { title: e.title, date: e.date, time: e.time, end: e.end || '', info: e.info, allDay: e.allDay, at: isNaN(at) ? null : at, link: base + '/calendar/view/day', source: 'outlook' };
+    }).sort((a, b) => (a.at || 0) - (b.at || 0));
+  } catch (e) { calError = String(e.message || e); }
+  return {
+    who: mail.who, unread: mail.unread, calendarError: calError,
+    entries: mail.entries.map(e => ({ subject: e.subject, snippet: e.snippet, from: e.from, at: when(e.time) || Date.now(), unread: e.unread, link: base + '/mail/inbox', source: 'outlook' })),
+    events, raw: mail.raw,
+  };
+}
+
 /* ---------- sync to the agent ---------- */
 let syncing = null;
 function sync() {
@@ -223,6 +323,7 @@ function sync() {
     await Promise.all([
       appOn('gcal') ? grab('calendar', () => calendar(s.email || out.gmail?.email)) : null,
       appOn('slack') ? grab('slack', () => slackTabRun(null)) : null,
+      appConfig?.apps?.outlook === true ? grab('outlook', outlook) : null,
       grab('tabs', async () => (await listTabs()).filter(t => allowedUrl(t.url).ok)),
     ]);
     let ok = false;
@@ -232,7 +333,7 @@ function sync() {
       if (ok) setConfig((await r.json().catch(() => ({}))).config);
       if (!ok) out.errors.agent = `agent said ${r.status}`;
     } catch (e) { out.errors.agent = /fetch/i.test(e.message) ? 'the Aura agent is not running on this computer' : e.message; }
-    const detail = { gmail: out.gmail ? `${out.gmail.unread} unread` : out.errors.gmail, calendar: out.calendar ? `${out.calendar.events.length} events` : out.errors.calendar, slack: out.slack ? `${out.slack.mentions.length} mentions` : out.errors.slack, ...(out.errors.agent ? { agent: out.errors.agent } : {}) };
+    const detail = { outlook: out.outlook ? `${out.outlook.unread} unread, ${out.outlook.events.length} events` : out.errors.outlook, gmail: out.gmail ? `${out.gmail.unread} unread` : out.errors.gmail, calendar: out.calendar ? `${out.calendar.events.length} events` : out.errors.calendar, slack: out.slack ? `${out.slack.mentions.length} mentions` : out.errors.slack, ...(out.errors.agent ? { agent: out.errors.agent } : {}) };
     await chrome.storage.local.set({ lastRun: { at: Date.now(), ok, detail } });
   })().finally(() => { syncing = null; });
   return syncing;

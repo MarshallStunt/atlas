@@ -271,3 +271,4 @@ a { color: inherit; text-decoration: none; }
 .url-row code { font: 13px var(--mono); word-break: break-all; }
 .url-row code.big-url { font-size: 17px; color: var(--cyan); }
 .chip.toggle:disabled { opacity: .5; }
+.unread-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); margin-right: 6px; vertical-align: 1px; box-shadow: 0 0 6px var(--cyan); }
