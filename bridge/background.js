@@ -330,7 +330,7 @@ let syncing = null;
 function sync() {
   syncing ||= (async () => {
     const s = await settings();
-    const out = { errors: {} };
+    const out = { errors: {}, version: chrome.runtime.getManifest().version };
     const grab = async (key, fn) => { try { out[key] = await fn(); } catch (e) { out.errors[key] = String(e.message || e); } };
     // Only the apps chosen for this computer: turned-off apps are not read and get no pinned tab.
     if (appOn('gmail')) await grab('gmail', gmail);
@@ -356,7 +356,21 @@ function sync() {
 /* ---------- which apps this computer uses (set in Aura → System → Apps; sent by the agent) ---------- */
 let appConfig = null;
 chrome.storage.local.get('appConfig').then(r => { appConfig ||= r.appConfig || null; });
-function setConfig(c) { if (c && c.apps) { appConfig = c; chrome.storage.local.set({ appConfig: c }); } }
+function setConfig(c) {
+  if (!c || !c.apps) return;
+  appConfig = c; chrome.storage.local.set({ appConfig: c });
+  maybeSelfUpdate(c.bridgeVersion);
+}
+// When Aura is updated, the installer writes the new extension files into this extension's folder;
+// reload once to start using them (no clicking reload in chrome://extensions).
+const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
+async function maybeSelfUpdate(v) {
+  if (!v || !newer(v, chrome.runtime.getManifest().version)) return;
+  const { reloadedFor } = await chrome.storage.local.get('reloadedFor');
+  if (reloadedFor === v) return; // already tried: this copy is loaded from an old folder
+  await chrome.storage.local.set({ reloadedFor: v });
+  chrome.runtime.reload();
+}
 const appOn = id => appConfig?.apps?.[id] !== false;
 function allowedUrl(url) {
   if (!appConfig || !/^https?:\/\//i.test(url || '')) return { ok: true };

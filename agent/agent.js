@@ -40,7 +40,9 @@ function appChoices() {
   return { apps: Object.fromEntries(APPS.map(a => [a.id, saved.apps?.[a.id] ?? a.def !== false])), otherSites: saved.otherSites !== false, outlookMailUrl: saved.outlookMailUrl || '', outlookCalUrl: saved.outlookCalUrl || '' };
 }
 // What the browser extension needs to know: which apps to sync and which sites it may read.
-const bridgeConfig = () => { const c = appChoices(); return { apps: c.apps, otherSites: c.otherSites, outlook: { mail: c.outlookMailUrl, calendar: c.outlookCalUrl }, matchers: Object.fromEntries(APPS.map(a => [a.id, matcherFor(a, c)])) }; };
+const bridgeConfig = () => { const c = appChoices(); return { bridgeVersion: BRIDGE_VERSION, apps: c.apps, otherSites: c.otherSites, outlook: { mail: c.outlookMailUrl, calendar: c.outlookCalUrl }, matchers: Object.fromEntries(APPS.map(a => [a.id, matcherFor(a, c)])) }; };
+// The extension version shipped with this agent; the extension reloads itself when it's older.
+const BRIDGE_VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'bridge', 'manifest.json'), 'utf8')).version; } catch { return null; } })();
 const CORE = { gmail: 'gmail', calendar: 'gcal', slack: 'slack', outlook: 'outlook' }; // inbox key -> app id
 
 /* ---------------- bridge state (Gmail / Calendar / Slack from Chrome) ---------------- */
@@ -101,7 +103,8 @@ async function overview() {
     capabilities: Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v.on])),
     apps: (() => { const ch = appChoices(); return { otherSites: ch.otherSites, outlookMailUrl: ch.outlookMailUrl, outlookCalUrl: ch.outlookCalUrl, list: APPS.map(a => ({ id: a.id, name: a.name, kind: a.kind, synced: !!a.synced, on: ch.apps[a.id] })) }; })(),
     // For the Connections panel on the phone: is the browser extension alive, and where it lives.
-    bridge: { lastSync: inbox?.receivedAt || null, lastPoll: bridgeSeen || null, extension: bridgeExtension || null, folder: path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'bridge') },
+    bridge: { lastSync: inbox?.receivedAt || null, lastPoll: bridgeSeen || null, extension: bridgeExtension || null, version: inbox?.version || null, expected: BRIDGE_VERSION,
+      folder: process.platform === 'win32' ? path.join(process.env.LOCALAPPDATA || os.homedir(), 'Aura', 'extension') : path.join(os.homedir(), '.aura', 'extension') },
   };
 }
 

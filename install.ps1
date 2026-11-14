@@ -119,11 +119,22 @@ foreach ($where in @([Environment]::GetFolderPath("Desktop"), (Join-Path $env:AP
 Write-Host "OK  Aura icon added to your Desktop and Start menu" -ForegroundColor Green
 
 # ---------- 6. Browser extension ----------
-$bridge = Join-Path $Dir "bridge"
+# It lives in its own folder that updates write into (never delete), so Chrome keeps it loaded,
+# and the extension reloads itself when a newer version arrives.
+$bridge = Join-Path $Home_ "extension"
+$firstTime = -not (Test-Path (Join-Path $bridge "manifest.json"))
+New-Item -ItemType Directory -Force -Path $bridge | Out-Null
+Copy-Item -Path (Join-Path $Dir "bridge\*") -Destination $bridge -Recurse -Force
 Write-Host ""
 Write-Host "OK  $name is installed and runs at logon." -ForegroundColor Green
 Write-Host ""
+if (-not $firstTime) {
+  Write-Host "OK  Browser extension updated; it reloads itself within a minute." -ForegroundColor Green
+  Write-Host "    (Load it from $bridge if Chrome still shows an older copy.)"
+  return
+}
 Write-Host "Last step, once: add the browser extension." -ForegroundColor Yellow
+Write-Host "  (If you added it before from another folder, remove that one first.)"
 Write-Host "  1. In the Chrome/Edge tab that just opened, turn on Developer mode (top right)."
 Write-Host "  2. Click 'Load unpacked' and choose this folder (Explorer just opened it):"
 Write-Host "     $bridge"

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Aura Bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "One install gives Aura read access to the web apps you're signed in to (mail, calendar, chat, anything), handed only to the Aura agent on this computer.",
   "permissions": [
     "storage",

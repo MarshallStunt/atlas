@@ -43,9 +43,10 @@ export function connections(net = {}) {
   const syncAge = bridge.lastSync ? Date.now() - bridge.lastSync : Infinity;
   const pollAge = bridge.lastPoll ? Date.now() - bridge.lastPoll : Infinity;
   const bridgeOk = dev?.online && syncAge < 3 * 60000;
-  const extHow = `In Chrome (or Edge/Brave) on the computer open chrome://extensions, turn on Developer mode, remove any old "Relay Bridge", then Load unpacked → ${bridge.folder || '~/Desktop/aura/bridge'}. It connects by itself within a minute.`;
+  const extHow = `On the computer, open chrome://extensions (or edge://extensions), turn on Developer mode, and remove any older Aura Bridge or Relay Bridge. Then click Load unpacked and pick:\n${bridge.folder || 'the Aura extension folder'}\n\nThat folder is kept up to date by Aura, and the extension reloads itself after updates, so this is a one-time step.`;
   if (!dev) {}
   else if (!caps.browser_read) add('Computer', 'Browser extension', 'off', 'Reading web apps is switched off on the computer.', { type: 'text', how: 'Turn on "Read your signed-in web apps" at http://127.0.0.1:8101 on the computer.' });
+  else if (bridgeOk && bridge.version && bridge.expected && bridge.version !== bridge.expected) add('Computer', 'Browser extension', 'warn', `Working, but it's an older copy (${bridge.version}; Aura has ${bridge.expected}). It's loaded from an old folder.`, { type: 'text', how: extHow });
   else if (bridgeOk) add('Computer', 'Browser extension', 'ok', `Syncing · last update ${ago(bridge.lastSync)}`);
   else if (pollAge < 3 * 60000) add('Computer', 'Browser extension', 'warn', `Connected, last full sync ${bridge.lastSync ? ago(bridge.lastSync) : 'not yet'}.`, { type: 'reconnect', label: 'Resync now' });
   else add('Computer', 'Browser extension', 'error', `${bridge.lastSync ? `Not syncing since ${ago(bridge.lastSync)}.` : 'Never connected.'} Aura restarts the browser by itself if it's closed; if it stays red, the extension needs reloading.`, { type: 'text', how: extHow });

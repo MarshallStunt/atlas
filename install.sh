@@ -125,15 +125,25 @@ else
   echo "✓ Aura icon added to your apps menu"
 fi
 
+# The extension lives in its own folder that updates write into (never delete), so the browser keeps
+# it loaded; it reloads itself when a newer version arrives.
+EXT="$AURA_HOME/extension"
+FIRST=""; [ -f "$EXT/manifest.json" ] || FIRST=1
+mkdir -p "$EXT"; cp -R "$DIR/bridge/." "$EXT/"
 echo ""
+if [ -z "$FIRST" ]; then
+  echo "✓ Browser extension updated; it reloads itself within a minute."
+  exit 0
+fi
 printf '\033[33mLast step, once: add the browser extension.\033[0m\n'
+echo "  (If you added it before from another folder, remove that one first.)"
 echo "  1. In the Chrome tab that just opened, turn on Developer mode (top right)."
 echo "  2. Click 'Load unpacked' and pick this folder (it's selected in the window that opened):"
-echo "     $DIR/bridge"
+echo "     $EXT"
 echo "  It connects to Aura by itself. Open Aura any time at http://127.0.0.1:8100"
 if [ "$(uname)" = Darwin ]; then
-  open -R "$DIR/bridge/manifest.json" 2>/dev/null || true
+  open -R "$EXT/manifest.json" 2>/dev/null || true
   open -a "Google Chrome" "chrome://extensions" 2>/dev/null || open -a "Microsoft Edge" "edge://extensions" 2>/dev/null || true
 else
-  (xdg-open "$DIR/bridge" >/dev/null 2>&1 &) || true
+  (xdg-open "$EXT" >/dev/null 2>&1 &) || true
 fi
