@@ -16,6 +16,10 @@ button.primary{border:0;background:linear-gradient(120deg,#22d3ee,#a78bfa 60%,#f
 details{margin:6px 14px 14px;color:var(--dim)}summary{cursor:pointer;font-size:12px}
 label{display:block;margin:8px 0 3px;font-size:11px}input{width:100%;padding:7px 9px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit}
 .save{margin-top:8px;width:100%}
+.group{font:600 10px ui-monospace,Menlo,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);padding:10px 12px 2px}
+.group:first-child{padding-top:8px}
+.idle .dot{background:none;border:1.5px solid var(--dim)}
+.apps .app:has(+ .group){border-bottom:0}
 </style></head><body>
 <header><img src="icons/icon48.png" alt=""><b>Atlas Bridge</b><span class="space" id="space" hidden></span></header>
 <div class="status" id="status"><span class="dot"></span><div><div id="statusText">Checking…</div><div class="when" style="padding:0" id="when"></div></div></div>

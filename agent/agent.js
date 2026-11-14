@@ -69,7 +69,7 @@ function appChoices(id = spaces.list[0].id) {
   return { apps: Object.fromEntries(APPS.map(a => [a.id, saved.apps?.[a.id] ?? a.def !== false])), otherSites: saved.otherSites !== false, outlookMailUrl: saved.outlookMailUrl || '', outlookCalUrl: saved.outlookCalUrl || '' };
 }
 // What a space's browser extension needs to know: which apps to sync and which sites it may read.
-const bridgeConfig = id => { const c = appChoices(id); return { space: spaceById(id)?.name, hubUrl, bridgeVersion: bridgeVersion(), apps: c.apps, otherSites: c.otherSites, outlook: { mail: c.outlookMailUrl, calendar: c.outlookCalUrl }, matchers: Object.fromEntries(APPS.map(a => [a.id, matcherFor(a, c)])) }; };
+const bridgeConfig = id => { const c = appChoices(id); return { space: spaceById(id)?.name, hubUrl, bridgeVersion: bridgeVersion(), apps: c.apps, otherSites: c.otherSites, outlook: { mail: c.outlookMailUrl, calendar: c.outlookCalUrl }, matchers: Object.fromEntries(APPS.map(a => [a.id, matcherFor(a, c)])), catalog: APPS.map(a => ({ id: a.id, name: a.name.replace(/ \(.*\)$/, ''), synced: !!a.synced })) }; };
 function answerPoll(id, jobs = []) {
   const r = R(id); if (!r.poller) return false;
   const { res, timer } = r.poller; r.poller = null; clearTimeout(timer);
