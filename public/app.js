@@ -5,6 +5,15 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const safeHref = u => /^https?:\/\//i.test(String(u || '')) ? esc(u) : '#';
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 let state = null, view = 'now', inboxTab = 'mail', briefData = null, briefLoading = false;
+// Which space the dashboard and assistant use: 'all' (every non-private space) or a space id.
+let spaceView = (() => { try { return localStorage.getItem('aura.space') || 'all'; } catch { return 'all'; } })();
+const setSpaceView = v => { spaceView = v; try { localStorage.setItem('aura.space', v); } catch {} };
+const spacesOf = snap => snap?.spaces || (snap ? [{ id: 'main', name: '', private: false, inbox: snap.inbox || {}, apps: snap.apps, bridge: snap.bridge }] : []);
+function visibleSpaces(snap) {
+  const list = spacesOf(snap);
+  if (spaceView !== 'all' && !list.some(x => x.id === spaceView)) setSpaceView('all');
+  return spaceView === 'all' ? list.filter(x => !x.private) : list.filter(x => x.id === spaceView);
+}
 
 /* ============================== API ============================== */
 async function api(path, opts = {}) {
@@ -394,11 +403,13 @@ $('#approvals').addEventListener('click', async e => {
 });
 
 /* ============================== briefing ============================== */
+const briefs = {};
 async function loadBrief(force = false) {
   if (briefLoading) return;
+  const v = spaceView;
   briefLoading = true; if (view === 'now') renderNow();
-  try { const b = await api(`/api/brief?tz=${encodeURIComponent(tz)}${force ? '&force=1' : ''}`); if (!b.pending) briefData = b; }
-  catch (e) { briefData = { error: e.message }; }
+  try { const b = await api(`/api/brief?tz=${encodeURIComponent(tz)}&view=${encodeURIComponent(v)}${force ? '&force=1' : ''}`); if (!b.pending) { briefs[v] = b; if (v === spaceView) briefData = b; } }
+  catch (e) { if (v === spaceView) briefData = { error: e.message }; }
   briefLoading = false; if (view === 'now') renderNow();
   renderSuggestions();
 }
@@ -412,11 +423,18 @@ function renderNow() {
   const el = $('#view-now');
   const d = device(), snap = state?.snapshot;
   const parts = [];
-  const comp = snap?.computer || {}, inbox = snap?.inbox || {};
-  const unread = (inbox.gmail?.unread || 0) + (inbox.outlook?.unread || 0), mentions = (inbox.slack?.mentions || []).length;
-  const allEvents = [...(inbox.calendar?.events || []), ...(inbox.outlook?.events || [])].sort((a, b) => (a.at || 0) - (b.at || 0));
+  const comp = snap?.computer || {};
+  const allSpaces = spacesOf(snap), srcs = visibleSpaces(snap), multi = srcs.length > 1;
+  const inbox = srcs.length === 1 ? (srcs[0].inbox || {}) : {}; // single-space view keeps the simple paths below
+  const sum = f => srcs.reduce((n, x) => n + (f(x.inbox || {}) || 0), 0);
+  const unread = sum(i => (i.gmail?.unread || 0) + (i.outlook?.unread || 0)), mentions = sum(i => (i.slack?.mentions || []).length);
+  const tagged = (list, x) => (list || []).map(e => ({ ...e, space: x.name }));
+  const allEvents = srcs.flatMap(x => [...tagged(x.inbox?.calendar?.events, x), ...tagged(x.inbox?.outlook?.events, x)]).sort((a, b) => (a.at || 0) - (b.at || 0));
+  const hasCalendar = srcs.some(x => x.inbox?.calendar || x.inbox?.outlook);
   parts.push(`<div class="hello"><h1>${greeting()}<span class="grad-text">.</span></h1>
     <div class="sub">${esc(new Date().toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }))}${connData && !connData.error ? ` · <button class="conn-chip ${((connData.counts.error || 0) + (connData.counts.warn || 0)) ? 'bad' : ''}" data-goto="system">${((connData.counts.error || 0) + (connData.counts.warn || 0)) ? ((connData.counts.error || 0) + (connData.counts.warn || 0)) + ' to fix' : 'all connected'}</button>` : ''}${snap ? ` · ${unread} unread · ${mentions} mentions` : ''}</div></div>`);
+
+  if (allSpaces.length > 1) parts.push(`<div class="spaces" role="tablist">${[{ id: 'all', name: 'All' }, ...allSpaces].map(x => `<button class="space-chip ${spaceView === x.id ? 'on' : ''}" data-space="${esc(x.id)}" role="tab" aria-selected="${spaceView === x.id}">${x.private ? '🔒 ' : ''}${esc(x.name)}</button>`).join('')}</div>`);
 
   if (!d) {
     parts.push(`<div class="panel edge brief"><h2>Pair your computer</h2><p class="dim">On the computer, run the Aura installer. It shows a code; enter it under System.</p><div class="row-actions"><button class="btn glow" data-goto="system">Open System</button></div></div>`);
@@ -452,7 +470,7 @@ function renderNow() {
 
   // Timeline
   const today = allEvents.filter(e => e.at && isToday(e.at));
-  if (inbox.calendar || inbox.outlook) {
+  if (hasCalendar) {
     let nowPlaced = false;
     const rows = today.map(e => {
       let pre = '';
@@ -465,12 +483,17 @@ function renderNow() {
 
   // Inbox (mail / chat)
   // Mail sources on this computer: Gmail and/or Outlook, plus Slack.
-  const mailRow = (m, i, src) => `<div class="msg-item" data-mail="${i}" data-src="${src}"><div class="avatar" style="background:${avatarColor(m.from || m.fromEmail)}">${esc(initials(m.from || m.fromEmail))}</div><div style="min-width:0"><div class="who">${m.unread ? '<span class="unread-dot"></span>' : ''}${esc(m.from || m.fromEmail)}</div><div class="subj">${esc(m.subject)}</div><div class="snip">${esc(m.snippet)}</div></div><div class="ago">${esc(short(m.at))}</div></div>`;
-  const tabs = [
-    inbox.gmail && { id: 'mail', label: inbox.outlook ? 'Gmail' : 'Mail', n: inbox.gmail.unread, html: (inbox.gmail.latest || []).slice(0, 7).map((m, i) => mailRow(m, i, 'gmail')).join('') || '<div class="empty">Inbox zero. ✨</div>', ask: 'Go through my unread Gmail: who needs what from me, and what can wait?' },
-    inbox.outlook && { id: 'outlook', label: inbox.gmail ? 'Outlook' : 'Mail', n: inbox.outlook.unread, html: (inbox.outlook.latest || []).slice(0, 7).map((m, i) => mailRow(m, i, 'outlook')).join('') || (inbox.outlook.raw ? `<div class="empty">Outlook is open but its list couldn't be read. Ask Aura about it instead.</div>` : '<div class="empty">Inbox zero. ✨</div>'), ask: 'Go through my Outlook inbox: who needs what from me, and what can wait?' },
-    inbox.slack && { id: 'chat', label: 'Slack', n: mentions, html: (inbox.slack.mentions || []).slice(0, 7).map((m, i) => `<div class="msg-item" data-chat="${i}"><div class="avatar" style="background:${avatarColor(m.user)}">${esc(initials(m.user))}</div><div style="min-width:0"><div class="who">${esc(m.user)} <span class="dim" style="font-weight:400">${m.isDm ? '· DM' : m.channel ? '· #' + esc(m.channel) : ''}</span></div><div class="snip" style="color:var(--text)">${esc(m.text)}</div></div><div class="ago">${esc(short(m.at))}</div></div>`).join('') || '<div class="empty">No mentions in the last 2 days.</div>', ask: 'What do people need from me on Slack? Most urgent first.' },
-  ].filter(Boolean);
+  const mailRow = (m, i, src) => `<div class="msg-item" data-mail="${i}" data-src="${esc(src)}"><div class="avatar" style="background:${avatarColor(m.from || m.fromEmail)}">${esc(initials(m.from || m.fromEmail))}</div><div style="min-width:0"><div class="who">${m.unread ? '<span class="unread-dot"></span>' : ''}${esc(m.from || m.fromEmail)}</div><div class="subj">${esc(m.subject)}</div><div class="snip">${esc(m.snippet)}</div></div><div class="ago">${esc(short(m.at))}</div></div>`;
+  // One tab per (space, app): "Work · Gmail", "Personal · Gmail", "Work · Slack"… (no prefix with one space).
+  const pre = x => multi ? `${x.name} · ` : '';
+  const tabs = srcs.flatMap(x => {
+    const i = x.inbox || {};
+    return [
+      i.gmail && { id: `${x.id}|gmail`, label: pre(x) + (i.outlook ? 'Gmail' : 'Mail'), n: i.gmail.unread, html: (i.gmail.latest || []).slice(0, 7).map((m, k) => mailRow(m, k, `${x.id}|gmail`)).join('') || '<div class="empty">Inbox zero. ✨</div>', ask: `Go through my unread Gmail${multi ? ` in the ${x.name} space` : ''}: who needs what from me, and what can wait?` },
+      i.outlook && { id: `${x.id}|outlook`, label: pre(x) + (i.gmail ? 'Outlook' : 'Mail'), n: i.outlook.unread, html: (i.outlook.latest || []).slice(0, 7).map((m, k) => mailRow(m, k, `${x.id}|outlook`)).join('') || (i.outlook.raw ? `<div class="empty">Outlook is open but its list couldn't be read. Ask Aura about it instead.</div>` : '<div class="empty">Inbox zero. ✨</div>'), ask: `Go through my Outlook inbox${multi ? ` in the ${x.name} space` : ''}: who needs what from me, and what can wait?` },
+      i.slack && { id: `${x.id}|slack`, label: pre(x) + 'Slack', n: (i.slack.mentions || []).length, html: (i.slack.mentions || []).slice(0, 7).map((m, k) => `<div class="msg-item" data-chat="${k}" data-src="${esc(x.id)}|slack"><div class="avatar" style="background:${avatarColor(m.user)}">${esc(initials(m.user))}</div><div style="min-width:0"><div class="who">${esc(m.user)} <span class="dim" style="font-weight:400">${m.isDm ? '· DM' : m.channel ? '· #' + esc(m.channel) : ''}</span></div><div class="snip" style="color:var(--text)">${esc(m.text)}</div></div><div class="ago">${esc(short(m.at))}</div></div>`).join('') || '<div class="empty">No mentions in the last 2 days.</div>', ask: `What do people need from me on Slack${multi ? ` (${x.name} space)` : ''}? Most urgent first.` },
+    ].filter(Boolean);
+  });
   if (tabs.length) {
     const cur = tabs.find(t => t.id === inboxTab) || tabs[0]; inboxTab = cur.id;
     parts.push(`<div class="panel"><div class="panel-head"><div class="seg">${tabs.map(t => `<button data-seg="${t.id}" class="${t.id === cur.id ? 'on' : ''}">${t.label} <b>${t.n ?? 0}</b></button>`).join('')}</div>
@@ -478,9 +501,10 @@ function renderNow() {
     ${cur.html}</div>`);
   }
 
-  const errs = Object.entries(inbox.errors || {});
-  if (inbox.connected === false || inbox.note) parts.push(`<div class="panel"><div class="label">Web apps</div><p class="dim">${esc(inbox.note || 'The browser extension hasn\'t sent fresh data. Open Chrome, Edge or Brave on the computer.')}</p></div>`);
-  else if (errs.length) parts.push(`<div class="panel"><div class="label">Sync</div>${errs.map(([k, v]) => `<p class="dim" style="margin:6px 0">${esc(k)}: ${esc(v)}</p>`).join('')}</div>`);
+  const errs = srcs.flatMap(x => Object.entries(x.inbox?.errors || {}).map(([k, v]) => [pre(x) + k, v]));
+  const silent = srcs.filter(x => x.inbox?.connected === false || x.inbox?.note);
+  if (silent.length) parts.push(`<div class="panel"><div class="label">Web apps</div>${silent.map(x => `<p class="dim">${esc(pre(x))}${esc(x.inbox.note || 'The browser extension hasn\'t sent fresh data. Open the browser on the computer.')}</p>`).join('')}</div>`);
+  if (errs.length) parts.push(`<div class="panel"><div class="label">Sync</div>${errs.map(([k, v]) => `<p class="dim" style="margin:6px 0">${esc(k)}: ${esc(String(v).replace(/^SIGN_IN:\s*/, ''))}</p>`).join('')}</div>`);
 
   // System HUD
   if (comp.host) {
@@ -517,12 +541,14 @@ function itemSheet(kind, m) {
   const who = kind === 'mail' ? (m.from || m.fromEmail) : m.user;
   const title = kind === 'mail' ? m.subject : (m.isDm ? 'Direct message' : '#' + m.channel);
   const body = kind === 'mail' ? m.snippet : m.text;
-  const replyAsk = kind === 'mail'
+  let replyAsk = kind === 'mail'
     ? `Draft a reply to ${who}${m.fromEmail ? ` <${m.fromEmail}>` : ''} about "${m.subject}"${m.source === 'outlook' ? ' (this is in my Outlook / nl.edu inbox; open the draft in Outlook)' : ''}. Read the email first, keep it short, and open it as a draft on my computer.`
     : `Reply to ${who} on Slack about: "${String(m.text).slice(0, 160)}". Suggest a short reply and send it after I approve.`;
-  const sumAsk = kind === 'mail'
+  let sumAsk = kind === 'mail'
     ? `Open and read the email "${m.subject}" from ${who}, summarize it in two sentences and tell me what they need.`
     : `Summarize the Slack conversation around ${who}'s message "${String(m.text).slice(0, 120)}" and tell me what they need.`;
+  const inSpace = m.space ? ` (in my ${m.space} space)` : '';
+  replyAsk += inSpace; sumAsk += inSpace;
   openSheet(`<div style="display:flex;gap:12px;align-items:center"><div class="avatar" style="background:${avatarColor(who)}">${esc(initials(who))}</div><div><h3>${esc(who)}</h3><div class="dim" style="font-size:13px">${esc(title)} · ${esc(rel(m.at))}</div></div></div>
     <div class="body">${esc(body)}</div>
     <div class="sheet-actions">
@@ -543,8 +569,10 @@ document.addEventListener('click', e => {
 $('#view-now').addEventListener('click', async e => {
   const t = e.target;
   const seg = t.closest('[data-seg]'); if (seg) { inboxTab = seg.dataset.seg; return renderNow(); }
-  const mail = t.closest('[data-mail]'); if (mail) return itemSheet('mail', state.snapshot.inbox[mail.dataset.src === 'outlook' ? 'outlook' : 'gmail'].latest[mail.dataset.mail]);
-  const chat = t.closest('[data-chat]'); if (chat) return itemSheet('chat', state.snapshot.inbox.slack.mentions[chat.dataset.chat]);
+  const fromSrc = (src, list, k) => { const [sid, app] = String(src).split('|'); const x = spacesOf(state.snapshot).find(y => y.id === sid); const item = x?.inbox?.[app]?.[list]?.[k]; return item && { ...item, space: x.name, spaceId: x.id }; };
+  const mail = t.closest('[data-mail]'); if (mail) return itemSheet('mail', fromSrc(mail.dataset.src, 'latest', mail.dataset.mail));
+  const chat = t.closest('[data-chat]'); if (chat) return itemSheet('chat', fromSrc(chat.dataset.src, 'mentions', chat.dataset.chat));
+  const sw = t.closest('[data-space]'); if (sw) { setSpaceView(sw.dataset.space); briefData = briefs[spaceView] || null; renderNow(); return loadBrief(); }
   if (t.closest('[data-brief-refresh]')) return loadBrief(true);
   const bi = t.closest('[data-brief]');
   if (bi) {
@@ -643,13 +671,26 @@ async function reconnectAll(btn) {
 }
 
 /* ---------- Apps per computer ---------- */
+let appsSpace = null; // which space the Apps panel is showing
 function appsPanel() {
-  const d = device(), a = state.snapshot?.apps;
+  const d = device(), list = spacesOf(state.snapshot);
   if (!d) return `<div class="label">Apps</div><p class="dim">Pair a computer first.</p>`;
+  const sx = list.find(x => x.id === appsSpace) || list[0]; appsSpace = sx?.id;
+  const a = sx?.apps;
   if (!a) return `<div class="label">Apps on ${esc(d.name)}</div><p class="dim">${d.online ? 'Waiting for the computer…' : 'The computer is offline.'} Update Aura on it to choose apps.</p>`;
+  const real = !!state.snapshot?.spaces;
+  const spaceBar = real ? `<div class="spaces" style="margin:0 0 10px">${list.map(x => `<button class="space-chip ${x.id === sx.id ? 'on' : ''}" data-appspace="${esc(x.id)}">${x.private ? '🔒 ' : ''}${esc(x.name)}</button>`).join('')}</div>
+    <div class="space-settings">
+      <form class="inline-form" id="space-name" style="margin:0"><input id="space-name-input" value="${esc(sx.name)}" maxlength="24" aria-label="Space name"><button class="btn sm">Rename</button></form>
+      <div class="row-actions" style="margin:8px 0 0">
+        <button class="chip toggle" data-spaceprivate aria-pressed="${!!sx.private}"><span class="led"></span>Private</button>
+        ${list.length > 1 ? '<button class="btn sm danger" data-spaceremove>Remove space</button>' : ''}
+      </div>
+      <p class="dim" style="font-size:12px;margin:6px 0 0">${esc(sx.browser || 'Browser')} · ${sx.connected ? 'connected' : 'not connected'}. Private spaces are only shown, and only used by the assistant, when you pick them at the top of Now. To add a space, install Aura Bridge in another browser or browser profile.</p>
+    </div>` : '';
   const sw = (id, name, on, sub) => `<div class="conn ${on ? 'ok' : 'off'}"><span class="cdot"></span><div class="cmain"><div class="cname">${esc(name)}</div>${sub ? `<div class="cdet">${esc(sub)}</div>` : ''}</div><button class="chip toggle" data-app="${esc(id)}" aria-pressed="${on}" ${d.online ? '' : 'disabled'}><span class="led"></span>${on ? 'On' : 'Off'}</button></div>`;
-  return `<div class="panel-head"><span class="label">Apps on ${esc(d.name)}</span></div>
-    <p class="dim" style="font-size:13px;margin:0 0 6px">Choose what Aura uses on this computer. Off means not synced, not opened, and not read even when you ask.</p>
+  return `<div class="panel-head"><span class="label">${real && list.length > 1 ? 'Spaces & apps' : 'Apps'} on ${esc(d.name)}</span></div>${spaceBar}
+    <p class="dim" style="font-size:13px;margin:0 0 6px">Choose what Aura uses${real && list.length > 1 ? ` in the ${esc(sx.name)} space` : ' on this computer'}. Off means not synced, not opened, and not read even when you ask.</p>
     <div class="conn-group">On the dashboard</div>${a.list.filter(x => x.synced).map(x => sw(x.id, x.name, x.on) + (x.id === 'outlook' && x.on ? outlookLinks(a, d) : '')).join('')}
     <div class="conn-group">Read when you ask</div>${a.list.filter(x => !x.synced).map(x => sw(x.id, x.name, x.on)).join('')}
     ${sw('__other', 'Other websites', a.otherSites, 'Any site not listed above, open in the browser')}`;
@@ -662,11 +703,23 @@ function outlookLinks(a, d) {
     <div class="row-actions" style="margin-top:0"><button class="btn sm glow" ${d.online ? '' : 'disabled'}>Save links</button></div>
     <p class="dim" style="font-size:12px;margin:6px 0 0">Use these if your school or company runs its own Outlook. Open your mail and calendar in the browser on this computer and copy the addresses.</p></form>`;
 }
+async function spaceAction(input, ok) {
+  try { await api('/api/action', { method: 'POST', body: { tool: 'set_space', input: { space: appsSpace, ...input } } }); toast(ok); }
+  catch (err) { toast(err.message); }
+  await new Promise(r => setTimeout(r, 400)); await refresh(true); $('#sec-apps').innerHTML = appsPanel(); loadConnections();
+}
+$('#view-system').addEventListener('click', async e => {
+  const t = e.target;
+  const pick = t.closest('[data-appspace]'); if (pick) { appsSpace = pick.dataset.appspace; $('#sec-apps').innerHTML = appsPanel(); return; }
+  if (t.closest('[data-spaceprivate]')) return spaceAction({ private: t.closest('[data-spaceprivate]').getAttribute('aria-pressed') !== 'true' }, 'Saved');
+  if (t.closest('[data-spaceremove]')) { if (confirm('Remove this space? Its browser can connect again later as a new space.')) { await spaceAction({ remove: true }, 'Space removed'); appsSpace = null; $('#sec-apps').innerHTML = appsPanel(); } }
+});
 $('#view-system').addEventListener('submit', async e => {
+  if (e.target.id === 'space-name') { e.preventDefault(); return spaceAction({ name: $('#space-name-input').value }, 'Renamed'); }
   if (e.target.id !== 'outlook-links') return;
   e.preventDefault();
   try {
-    await api('/api/action', { method: 'POST', body: { tool: 'set_apps', input: { outlookMailUrl: $('#ol-mail').value, outlookCalUrl: $('#ol-cal').value } } });
+    await api('/api/action', { method: 'POST', body: { tool: 'set_apps', input: { space: appsSpace, outlookMailUrl: $('#ol-mail').value, outlookCalUrl: $('#ol-cal').value } } });
     toast('Saved. Aura opens Outlook with these links within a minute.');
     await new Promise(r => setTimeout(r, 500)); await refresh(true); $('#sec-apps').innerHTML = appsPanel(); loadConnections();
   } catch (err) { toast(err.message); }
@@ -676,7 +729,7 @@ $('#view-system').addEventListener('click', async e => {
   const on = t.getAttribute('aria-pressed') !== 'true', id = t.dataset.app;
   t.disabled = true;
   try {
-    await api('/api/action', { method: 'POST', body: { tool: 'set_apps', input: id === '__other' ? { otherSites: on } : { apps: { [id]: on } } } });
+    await api('/api/action', { method: 'POST', body: { tool: 'set_apps', input: { space: appsSpace, ...(id === '__other' ? { otherSites: on } : { apps: { [id]: on } }) } } });
     await new Promise(r => setTimeout(r, 500)); await refresh(true);
   } catch (err) { toast(err.message); }
   $('#sec-apps').innerHTML = appsPanel(); loadConnections();
@@ -858,7 +911,7 @@ async function send(text, { voice = false } = {}) {
   let cur = null, lastStep = null, full = '';
   const ensure = () => (cur ||= bubble('assistant', '', 'typing'));
   try {
-    const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, tz }) });
+    const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, tz, view: spaceView }) });
     if (r.status === 401) { showLogin(); return; }
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
     const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '';

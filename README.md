@@ -59,6 +59,13 @@ In **System → Apps**, each computer chooses which apps Aura uses. Gmail, Googl
 **Outlook (Microsoft 365, e.g. school or work accounts)** is off by default. Turn it on for the computer where you use it: Aura keeps two pinned Outlook tabs (inbox and calendar) in that browser and shows the mail and meetings alongside Gmail.
 Apps that are off are never synced, opened or read.
 
+## Spaces (work and personal)
+
+Every browser (or browser profile) with Aura Bridge is its own **space**, with its own accounts, app choices and data.
+Install the extension in a second browser and it shows up as a new space. Rename it (e.g. **Personal**) in **System → Spaces & apps**.
+At the top of **Now**, switch between **All**, **Work** and **Personal**. The briefing, the lists and the assistant follow that choice.
+A **private** space is never mixed into All: it's shown, and used by the assistant, only when you pick it.
+
 ## AI providers
 
 Choose under **Devices → Assistant**: Anthropic Claude (default `claude-opus-5-5`), OpenAI, Google Gemini,

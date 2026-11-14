@@ -34,57 +34,86 @@ function policy() {
 }
 const allowed = key => policy()[key]?.on;
 
-/* ---------------- app choices for this computer ---------------- */
-function appChoices() {
-  const saved = readJson('apps.json', {});
-  return { apps: Object.fromEntries(APPS.map(a => [a.id, saved.apps?.[a.id] ?? a.def !== false])), otherSites: saved.otherSites !== false, outlookMailUrl: saved.outlookMailUrl || '', outlookCalUrl: saved.outlookCalUrl || '' };
-}
-// What the browser extension needs to know: which apps to sync and which sites it may read.
-const bridgeConfig = () => { const c = appChoices(); return { bridgeVersion: BRIDGE_VERSION, apps: c.apps, otherSites: c.otherSites, outlook: { mail: c.outlookMailUrl, calendar: c.outlookCalUrl }, matchers: Object.fromEntries(APPS.map(a => [a.id, matcherFor(a, c)])) }; };
+/* ---------------- spaces: one per browser (e.g. Work in Chrome, Personal in Edge) ----------------
+   Each browser's extension is its own space with its own data, app choices and jobs, so a personal
+   Gmail never overwrites a work one, and actions go to the browser they belong to. */
+const CORE = { gmail: 'gmail', calendar: 'gcal', slack: 'slack', outlook: 'outlook' }; // inbox key -> app id
 // The extension version shipped with this agent; the extension reloads itself when it's older.
 const BRIDGE_VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'bridge', 'manifest.json'), 'utf8')).version; } catch { return null; } })();
-const CORE = { gmail: 'gmail', calendar: 'gcal', slack: 'slack', outlook: 'outlook' }; // inbox key -> app id
+const sp = (id, n) => path.join('spaces', id, n);
+fs.mkdirSync(f('spaces'), { recursive: true, mode: 0o700 });
 
-/* ---------------- bridge state (Gmail / Calendar / Slack from Chrome) ---------------- */
-let bridgeToken = fs.existsSync(f('bridge-token')) ? fs.readFileSync(f('bridge-token'), 'utf8').trim() : '';
-if (!bridgeToken) { bridgeToken = crypto.randomBytes(18).toString('base64url'); fs.writeFileSync(f('bridge-token'), bridgeToken, { mode: 0o600 }); }
-let inbox = readJson('inbox.json', null); // last data the bridge sent
-const bridgeJobs = [];                     // jobs waiting for the bridge (e.g. Slack sends)
-const jobWaiters = new Map();              // job id -> { resolve, reject, timer }
-let jobPoller = null;                      // the bridge's open long-poll request
+let spaces = readJson('spaces.json', null);
+if (!spaces) {
+  // First run with spaces: everything that existed becomes the "Work" space (same token, data, choices).
+  const legacyToken = fs.existsSync(f('bridge-token')) ? fs.readFileSync(f('bridge-token'), 'utf8').trim() : '';
+  spaces = { list: [{ id: 'work', name: 'Work', origin: null, token: legacyToken || crypto.randomBytes(18).toString('base64url'), browser: readJson('browser.json', {}).app || 'Google Chrome', private: false }] };
+  fs.mkdirSync(f(path.join('spaces', 'work')), { recursive: true, mode: 0o700 });
+  for (const n of ['inbox.json', 'apps.json']) if (fs.existsSync(f(n))) fs.copyFileSync(f(n), f(sp('work', n)));
+  writeJson('spaces.json', spaces);
+}
+const saveSpaces = () => writeJson('spaces.json', spaces);
+const rt = {}; // runtime per space: { inbox, seen, poller, jobs, lastLaunch }
+const R = id => (rt[id] ||= { inbox: readJson(sp(id, 'inbox.json'), null), seen: 0, poller: null, jobs: [], lastLaunch: 0 });
+const jobWaiters = new Map(); // job id -> { resolve, reject, timer }
+const spaceById = id => spaces.list.find(s => s.id === id);
+const findSpace = key => { const k = String(key || '').toLowerCase(); return spaces.list.find(s => s.id === k || s.name.toLowerCase() === k) || null; };
+const connectedNow = s => Date.now() - R(s.id).seen < 90 * 1000;
 
-let bridgeSeen = 0;        // last time the bridge asked for jobs
-let bridgeExtension = '';  // which extension connected (shown on the local page)
-let browserApp = readJson('browser.json', {}).app || 'Google Chrome'; // which browser it lives in
-let lastLaunch = 0;
-// Hand a job to the browser extension and wait for its answer.
-function browser(kind, input) {
-  const ch = appChoices();
-  if (kind === 'read' && input?.url) { const v = urlAllowed(input.url, ch); if (!v.ok) return Promise.reject(new Error(v.reason)); }
-  if (kind === 'slack_send' && ch.apps.slack === false) return Promise.reject(new Error('Slack is turned off for this computer in Aura (System → Apps).'));
-  if (Date.now() - bridgeSeen > 90 * 1000) return Promise.reject(new Error('The browser extension is not connected on this computer. Open Chrome / Edge / Brave with the Aura Bridge extension installed.'));
-  const job = { id: crypto.randomUUID(), kind, input };
+/* ---------------- app choices, per space ---------------- */
+function appChoices(id = spaces.list[0].id) {
+  const saved = readJson(sp(id, 'apps.json'), {});
+  return { apps: Object.fromEntries(APPS.map(a => [a.id, saved.apps?.[a.id] ?? a.def !== false])), otherSites: saved.otherSites !== false, outlookMailUrl: saved.outlookMailUrl || '', outlookCalUrl: saved.outlookCalUrl || '' };
+}
+// What a space's browser extension needs to know: which apps to sync and which sites it may read.
+const bridgeConfig = id => { const c = appChoices(id); return { space: spaceById(id)?.name, bridgeVersion: BRIDGE_VERSION, apps: c.apps, otherSites: c.otherSites, outlook: { mail: c.outlookMailUrl, calendar: c.outlookCalUrl }, matchers: Object.fromEntries(APPS.map(a => [a.id, matcherFor(a, c)])) }; };
+function answerPoll(id, jobs = []) {
+  const r = R(id); if (!r.poller) return false;
+  const { res, timer } = r.poller; r.poller = null; clearTimeout(timer);
+  json(res, 200, { jobs, config: bridgeConfig(id) }); return true;
+}
+
+// Which space a request is for: the one named, else the one that has that site open, else the
+// first connected non-private one.
+function pickSpace(input = {}, kind) {
+  const pool = input._public ? spaces.list.filter(x => !x.private) : spaces.list; // hub says: not private ones
+  if (input.space) { const s = findSpace(input.space); if (!s) throw new Error(`There's no space called "${input.space}". Spaces: ${spaces.list.map(x => x.name).join(', ')}.`); return s; }
+  if (kind === 'slack_send') { const s = pool.find(x => connectedNow(x) && R(x.id).inbox?.slack && appChoices(x.id).apps.slack); if (s) return s; }
+  if (input.url) { try { const host = new URL(input.url).host; const s = pool.find(x => connectedNow(x) && (R(x.id).inbox?.tabs || []).some(t => String(t.url).includes(host))); if (s) return s; } catch {} }
+  const s = pool.find(x => connectedNow(x) && !x.private) || pool.find(connectedNow) || pool[0];
+  if (!s) throw new Error('No space is available for this.');
+  return s;
+}
+
+// Hand a job to a space's browser extension and wait for its answer.
+function browser(kind, input = {}) {
+  let s; try { s = pickSpace(input, kind); } catch (e) { return Promise.reject(e); }
+  const { space, _public, ...rest } = input;
+  const ch = appChoices(s.id);
+  if (kind === 'read' && rest.url) { const v = urlAllowed(rest.url, ch); if (!v.ok) return Promise.reject(new Error(v.reason)); }
+  if (kind === 'slack_send' && ch.apps.slack === false) return Promise.reject(new Error(`Slack is turned off for the ${s.name} space (System → Apps).`));
+  if (!connectedNow(s)) return Promise.reject(new Error(`The ${s.name} browser (${s.browser}) isn't connected. Open it with the Aura Bridge extension installed.`));
+  const job = { id: crypto.randomUUID(), kind, input: rest };
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { jobWaiters.delete(job.id); reject(new Error('The browser extension did not answer in time.')); }, 60000);
-    jobWaiters.set(job.id, { resolve, reject, timer });
-    bridgeJobs.push(job);
-    flushJobs();
+    const timer = setTimeout(() => { jobWaiters.delete(job.id); reject(new Error(`The ${s.name} browser didn't answer in time.`)); }, 60000);
+    jobWaiters.set(job.id, { resolve: v => resolve(v && typeof v === 'object' ? { space: s.name, ...v } : v), reject, timer, space: s.id });
+    R(s.id).jobs.push(job);
+    flushJobs(s.id);
   });
 }
-function flushJobs() {
-  if (jobPoller && bridgeJobs.length) { const { res, timer } = jobPoller; jobPoller = null; clearTimeout(timer); json(res, 200, { jobs: bridgeJobs.splice(0), config: bridgeConfig() }); }
-}
+function flushJobs(id) { const r = R(id); if (r.poller && r.jobs.length) answerPoll(id, r.jobs.splice(0)); }
 
-function overviewInbox() {
-  if (!inbox) return { connected: false, note: 'The Chrome bridge has not sent anything yet.' };
+function overviewSpace(id) {
+  const inbox = R(id).inbox;
+  if (!inbox) return { connected: false, note: 'This browser has not sent anything yet.' };
   const now = Date.now();
-  const ch = appChoices();
+  const ch = appChoices(id);
   const on = key => ch.apps[CORE[key]] !== false;
   const events = (inbox.calendar?.events || []).filter(e => !e.at || (e.at > now - 3600e3 && e.at < now + 36 * 3600e3)).slice(0, 20);
   return {
     connected: now - (inbox.receivedAt || 0) < 10 * 60 * 1000, updated: new Date(inbox.receivedAt).toISOString(),
-    calendar: on('calendar') && inbox.calendar ? { events } : null,
-    gmail: on('gmail') && inbox.gmail ? { unread: inbox.gmail.unread, latest: (inbox.gmail.entries || []).slice(0, 15) } : null,
+    calendar: on('calendar') && inbox.calendar ? { email: inbox.calendar.email, events } : null,
+    gmail: on('gmail') && inbox.gmail ? { email: inbox.gmail.email, unread: inbox.gmail.unread, latest: (inbox.gmail.entries || []).slice(0, 15) } : null,
     outlook: on('outlook') && inbox.outlook ? { who: inbox.outlook.who, unread: inbox.outlook.unread, latest: (inbox.outlook.entries || []).slice(0, 15),
       events: (inbox.outlook.events || []).filter(e => !e.at || (e.at > now - 3600e3 && e.at < now + 4 * 864e5)).slice(0, 30), calendarError: inbox.outlook.calendarError || null,
       ...(inbox.outlook.raw ? { raw: inbox.outlook.raw } : {}), ...(inbox.outlook.calendarRaw ? { calendarRaw: inbox.outlook.calendarRaw } : {}) } : null,
@@ -93,76 +122,121 @@ function overviewInbox() {
     errors: Object.fromEntries(Object.entries(inbox.errors || {}).filter(([k]) => !CORE[k] || on(k))),
   };
 }
+const extFolder = process.platform === 'win32' ? path.join(process.env.LOCALAPPDATA || os.homedir(), 'Aura', 'extension') : path.join(os.homedir(), '.aura', 'extension');
+function spaceSummary(s) {
+  const r = R(s.id), ch = appChoices(s.id);
+  return {
+    id: s.id, name: s.name, private: !!s.private, browser: s.browser, connected: connectedNow(s),
+    inbox: overviewSpace(s.id),
+    apps: { otherSites: ch.otherSites, outlookMailUrl: ch.outlookMailUrl, outlookCalUrl: ch.outlookCalUrl, list: APPS.map(a => ({ id: a.id, name: a.name, kind: a.kind, synced: !!a.synced, on: ch.apps[a.id] })) },
+    bridge: { lastSync: r.inbox?.receivedAt || null, lastPoll: r.seen || null, extension: s.origin || null, version: r.inbox?.version || null, expected: BRIDGE_VERSION, folder: extFolder },
+  };
+}
 
 async function overview() {
   const p = policy();
+  const list = p.browser_read.on ? spaces.list.map(spaceSummary) : [];
+  const main = list.find(x => !x.private) || list[0];
   return {
     takenAt: new Date().toISOString(),
     computer: p.status.on ? await status() : { note: 'Status is switched off on this computer.' },
-    inbox: p.browser_read.on ? overviewInbox() : { note: 'Reading web apps is switched off on this computer.' },
     capabilities: Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v.on])),
-    apps: (() => { const ch = appChoices(); return { otherSites: ch.otherSites, outlookMailUrl: ch.outlookMailUrl, outlookCalUrl: ch.outlookCalUrl, list: APPS.map(a => ({ id: a.id, name: a.name, kind: a.kind, synced: !!a.synced, on: ch.apps[a.id] })) }; })(),
-    // For the Connections panel on the phone: is the browser extension alive, and where it lives.
-    bridge: { lastSync: inbox?.receivedAt || null, lastPoll: bridgeSeen || null, extension: bridgeExtension || null, version: inbox?.version || null, expected: BRIDGE_VERSION,
-      folder: process.platform === 'win32' ? path.join(process.env.LOCALAPPDATA || os.homedir(), 'Aura', 'extension') : path.join(os.homedir(), '.aura', 'extension') },
+    spaces: list,
+    // Older hubs read these: the main (first non-private) space.
+    inbox: p.browser_read.on ? (main?.inbox || { connected: false }) : { note: 'Reading web apps is switched off on this computer.' },
+    apps: main?.apps, bridge: main?.bridge,
   };
 }
 
 const tools = makeTools({ overview, browser });
 
 /* ---------------- automatic reconnection ----------------
-   If the browser extension goes quiet (browser closed, crashed, or asleep), start the browser again
-   in the background. The extension then wakes its app tabs and syncs by itself. */
-const bridgeQuiet = () => Date.now() - bridgeSeen > 3 * 60 * 1000;
-function browserRunning() {
+   If a space's browser goes quiet (closed, crashed, asleep), start that browser again in the
+   background. Its extension then wakes its app tabs and syncs by itself. */
+function browserRunning(app) {
   if (process.platform === 'win32') return false;
-  try { return execFileSync('pgrep', ['-f', browserApp], { stdio: ['ignore', 'pipe', 'ignore'] }).length > 0; } catch { return false; }
+  try { return execFileSync('pgrep', ['-f', app], { stdio: ['ignore', 'pipe', 'ignore'] }).length > 0; } catch { return false; }
 }
-function launchBrowser(reason) {
-  if (browserRunning()) return { launched: false, note: `${browserApp} is open but the Aura extension isn't answering. In ${browserApp}, open the extensions page and reload Aura Bridge (or load it from the Aura folder).` };
-  if (Date.now() - lastLaunch < 10 * 60 * 1000) return { launched: false, note: 'Started the browser a few minutes ago; waiting for it.' };
-  lastLaunch = Date.now();
-  const exe = { 'Google Chrome': ['chrome', 'google-chrome'], 'Microsoft Edge': ['msedge', 'microsoft-edge'], 'Brave Browser': ['brave', 'brave-browser'], Opera: ['opera', 'opera'] }[browserApp] || ['chrome', 'google-chrome'];
-  const [cmd, args] = process.platform === 'darwin' ? ['open', ['-g', '-a', browserApp]]
+function launchBrowser(s, reason) {
+  const r = R(s.id);
+  if (browserRunning(s.browser)) return { launched: false, note: `${s.browser} (${s.name}) is open but its Aura extension isn't answering. Reload Aura Bridge there, or load it from ${extFolder}.` };
+  if (Date.now() - r.lastLaunch < 10 * 60 * 1000) return { launched: false, note: `Started ${s.browser} a few minutes ago; waiting for it.` };
+  r.lastLaunch = Date.now();
+  const exe = { 'Google Chrome': ['chrome', 'google-chrome'], 'Microsoft Edge': ['msedge', 'microsoft-edge'], 'Brave Browser': ['brave', 'brave-browser'], Opera: ['opera', 'opera'] }[s.browser] || ['chrome', 'google-chrome'];
+  const [cmd, args] = process.platform === 'darwin' ? ['open', ['-g', '-a', s.browser]]
     : process.platform === 'win32' ? ['cmd.exe', ['/d', '/c', 'start', '', '/min', exe[0]]]
     : [exe[1], []];
   try { spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true }).unref(); } catch (e) { return { launched: false, note: 'Could not start the browser: ' + e.message }; }
-  audit({ event: 'reconnect.browser_started', browser: browserApp, reason });
-  log(`Browser extension was quiet; started ${browserApp} in the background (${reason}).`);
-  return { launched: true, note: `Started ${browserApp} in the background; the extension reconnects within a minute.` };
+  audit({ event: 'reconnect.browser_started', space: s.name, browser: s.browser, reason });
+  log(`${s.name}: browser extension was quiet; started ${s.browser} in the background (${reason}).`);
+  return { launched: true, note: `Started ${s.browser} in the background; the ${s.name} space reconnects within a minute.` };
 }
 setInterval(() => {
-  if (!allowed('browser_read') || !bridgeQuiet()) return;
-  if (!bridgeExtension && !inbox) return; // never set up on this computer: nothing to reconnect
-  launchBrowser('watchdog');
+  if (!allowed('browser_read')) return;
+  for (const s of spaces.list) if (Date.now() - R(s.id).seen > 3 * 60 * 1000 && (s.origin || R(s.id).inbox)) launchBrowser(s, 'watchdog');
 }, 60 * 1000);
 
-// Double-check the extension's answers against the app choices before anything reaches the hub.
-tools.browser_tabs = async () => { const r = await browser('tabs', {}); const ch = appChoices(); return { tabs: (r?.tabs || []).filter(t => urlAllowed(t.url, ch).ok) }; };
+// Double-check the extension's answers against that space's app choices before anything reaches the hub.
+tools.browser_tabs = async (input = {}) => {
+  const targets = input.space ? [findSpace(input.space)].filter(Boolean) : spaces.list.filter(x => connectedNow(x) && !(input._public && x.private));
+  const out = [];
+  for (const s of targets) { try { const r = await browser('tabs', { space: s.id }); const ch = appChoices(s.id); out.push(...(r?.tabs || []).filter(t => urlAllowed(t.url, ch).ok).map(t => ({ ...t, space: s.name }))); } catch {} }
+  return { tabs: out };
+};
 const readTool = tools.browser_read, actTool = tools.browser_act;
-tools.browser_read = async input => { const r = await readTool(input); const v = urlAllowed(r?.url, appChoices()); if (!v.ok) throw new Error(v.reason); return r; };
-tools.browser_act = async input => { const r = await actTool(input); const v = urlAllowed(r?.after?.url, appChoices()); if (!v.ok) throw new Error(v.reason); return r; };
+const spaceOfResult = r => findSpace(r?.space) || spaces.list[0];
+tools.browser_read = async input => { const r = await readTool(input); const v = urlAllowed(r?.url, appChoices(spaceOfResult(r).id)); if (!v.ok) throw new Error(v.reason); return r; };
+tools.browser_act = async input => { const r = await actTool(input); const v = urlAllowed(r?.after?.url, appChoices(spaceOfResult(r).id)); if (!v.ok) throw new Error(v.reason); return r; };
 
-// Choosing apps for this computer (from System → Apps on the phone). Applies at once.
-tools.set_apps = async ({ apps = {}, otherSites, outlookMailUrl, outlookCalUrl } = {}) => {
-  const cur = appChoices();
+// Choosing apps for a space (System → Apps on the phone). Applies at once.
+tools.set_apps = async ({ space, apps = {}, otherSites, outlookMailUrl, outlookCalUrl } = {}) => {
+  const s = space ? findSpace(space) : spaces.list[0];
+  if (!s) throw new Error('No such space.');
+  const cur = appChoices(s.id);
   if (outlookMailUrl !== undefined) cur.outlookMailUrl = cleanLink(outlookMailUrl);
   if (outlookCalUrl !== undefined) cur.outlookCalUrl = cleanLink(outlookCalUrl);
   for (const [id, on] of Object.entries(apps)) if (APPS.some(a => a.id === id)) cur.apps[id] = !!on;
   if (typeof otherSites === 'boolean') cur.otherSites = otherSites;
-  writeJson('apps.json', cur);
-  audit({ event: 'apps.changed', apps: cur.apps, otherSites: cur.otherSites });
-  log('Apps changed: off = ' + (Object.entries(cur.apps).filter(([, v]) => !v).map(([k]) => k).join(', ') || 'none'));
-  if (jobPoller) { const { res, timer } = jobPoller; jobPoller = null; clearTimeout(timer); json(res, 200, { jobs: [], config: bridgeConfig() }); } // tell the extension now
+  fs.mkdirSync(f(path.join('spaces', s.id)), { recursive: true, mode: 0o700 });
+  writeJson(sp(s.id, 'apps.json'), cur);
+  audit({ event: 'apps.changed', space: s.name, apps: cur.apps, otherSites: cur.otherSites });
+  log(`${s.name}: apps off = ` + (Object.entries(cur.apps).filter(([, v]) => !v).map(([k]) => k).join(', ') || 'none'));
+  answerPoll(s.id); // tell that browser now
   pushSnapshot();
-  return { ok: true, ...cur };
+  return { ok: true, space: s.name, ...cur };
+};
+
+// Rename a space, make it private, or remove it (its browser can connect again as a new space).
+tools.set_space = async ({ space, name, private: priv, remove } = {}) => {
+  const s = findSpace(space);
+  if (!s) throw new Error('No such space.');
+  if (remove) {
+    if (spaces.list.length === 1) throw new Error('Keep at least one space.');
+    spaces.list = spaces.list.filter(x => x !== s); saveSpaces();
+    answerPoll(s.id); delete rt[s.id];
+    fs.rmSync(f(path.join('spaces', s.id)), { recursive: true, force: true });
+    audit({ event: 'space.removed', space: s.name }); pushSnapshot();
+    return { ok: true, removed: s.name };
+  }
+  if (typeof name === 'string') {
+    const n = name.trim().slice(0, 24);
+    if (!n) throw new Error('Give the space a name.');
+    if (spaces.list.some(x => x !== s && x.name.toLowerCase() === n.toLowerCase())) throw new Error('Another space already has that name.');
+    s.name = n;
+  }
+  if (typeof priv === 'boolean') s.private = priv;
+  saveSpaces(); audit({ event: 'space.changed', space: s.name, private: s.private }); pushSnapshot();
+  return { ok: true, id: s.id, name: s.name, private: s.private };
 };
 
 tools.reconnect = async () => {
   if (!allowed('browser_read')) return { ok: false, note: 'Reading web apps is switched off on this computer.' };
-  if (bridgeQuiet()) return launchBrowser('requested from the phone');
-  const run = await browser('resync', {});
-  return { ok: true, note: 'Browser extension resynced.', detail: run?.detail || {} };
+  const notes = [];
+  for (const s of spaces.list) {
+    if (Date.now() - R(s.id).seen > 3 * 60 * 1000) { if (s.origin || R(s.id).inbox) notes.push(launchBrowser(s, 'requested from the phone').note); }
+    else { try { await browser('resync', { space: s.id }); notes.push(`${s.name}: resynced.`); } catch (e) { notes.push(`${s.name}: ${e.message}`); } }
+  }
+  return { ok: true, note: notes.join(' ') || 'Nothing to reconnect.' };
 };
 
 async function handleCall({ id, tool, input }) {
@@ -233,13 +307,14 @@ function connect() {
   ws.on('error', e => { if (backoff <= 2000) log('Hub not reachable yet:', e.message); });
 }
 
-let pushing = false;
+let pushing = false, pushAgain = false;
 async function pushSnapshot() {
-  if (!connected || pushing) return;
+  if (!connected) return;
+  if (pushing) { pushAgain = true; return; } // a change came in mid-push: send a fresh one right after
   pushing = true;
   try { ws.send(JSON.stringify({ type: 'snapshot', data: await overview() })); }
   catch (e) { log('snapshot failed:', e.message); }
-  finally { pushing = false; }
+  finally { pushing = false; if (pushAgain) { pushAgain = false; pushSnapshot(); } }
 }
 
 /* ---------------- local page + bridge endpoints (127.0.0.1 only) ---------------- */
@@ -256,7 +331,6 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 
 function page() {
   const p = policy();
-  const ib = overviewInbox();
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aura agent</title>
 <style>:root{color-scheme:light dark;--bg:#0b0d12;--card:#141821;--line:#262c39;--text:#e8ecf3;--dim:#8b93a7;--accent:#5eead4}
 @media (prefers-color-scheme:light){:root{--bg:#f5f6f8;--card:#fff;--line:#e1e4ea;--text:#141821;--dim:#5b6475;--accent:#0f9488}}
@@ -269,9 +343,9 @@ code{background:var(--bg);padding:2px 6px;border-radius:6px;word-break:break-all
 <div class="card"><b>What Aura may do on this computer</b>
 <form id="f">${Object.entries(p).map(([k, v]) => `<label><input type="checkbox" name="${k}" ${v.on ? 'checked' : ''}><span><b>${esc(v.label)}</b><br><span class="dim">${esc(v.detail)}</span></span></label>`).join('')}</form>
 <div id="saved" class="dim"></div></div>
-<div class="card"><b>Browser extension</b> — ${Date.now() - bridgeSeen < 90000 ? '<span class="ok">connected</span>' : 'not connected'}${inbox ? ` <span class="dim">(last update ${esc(new Date(inbox.receivedAt).toLocaleTimeString())})</span>` : ''}
-<p class="dim">${bridgeExtension ? 'Connected extension: <code>' + esc(bridgeExtension) + '</code>' : 'Load the <code>bridge</code> folder as an unpacked extension in Chrome, Edge or Brave. It connects to this agent by itself.'}</p>
-${Object.entries(ib.errors || {}).map(([k, v]) => `<p class="dim">${esc(k)}: ${esc(v)}</p>`).join('')}</div>
+<div class="card"><b>Browsers (spaces)</b>
+${spaces.list.map(sx => { const r = R(sx.id); const ib = overviewSpace(sx.id); return `<p><b>${esc(sx.name)}</b>${sx.private ? ' (private)' : ''} · ${esc(sx.browser)} — ${connectedNow(sx) ? '<span class="ok">connected</span>' : 'not connected'}${r.inbox ? ` <span class="dim">(last update ${esc(new Date(r.inbox.receivedAt).toLocaleTimeString())})</span>` : ''}</p>${Object.entries(ib.errors || {}).map(([k, v]) => `<p class="dim">${esc(k)}: ${esc(v)}</p>`).join('')}`; }).join('')}
+<p class="dim">Add a space by installing the Aura Bridge extension in another browser or browser profile (load it from <code>${esc(extFolder)}</code>). It connects by itself as a new space you can rename in Aura.</p></div>
 <script>document.getElementById('f').addEventListener('change',async()=>{const fd=new FormData(document.getElementById('f'));const body={};${JSON.stringify(Object.keys(p))}.forEach(k=>body[k]=fd.has(k));
 const r=await fetch('/policy',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':${JSON.stringify(csrf)}},body:JSON.stringify(body)});document.getElementById('saved').textContent=r.ok?'Saved.':'Could not save.';});</script>
 </main></body></html>`;
@@ -287,33 +361,48 @@ const local = http.createServer(async (req, res) => {
       const origin = String(req.headers.origin || '');
       if (!/^(chrome|moz|edge)-extension:\/\/[a-z0-9-]+$/i.test(origin)) return json(res, 403, { error: 'extensions only' });
       if (!allowed('browser_read') && !allowed('browser_act')) return json(res, 403, { error: 'browser access is switched off on this computer' });
-      bridgeExtension = origin;
-      try { const b = await body(req); if (/^[A-Za-z ]{3,30}$/.test(b.browser || '')) { browserApp = b.browser; writeJson('browser.json', { app: browserApp }); } } catch {}
-      audit({ event: 'bridge.hello', extension: origin });
-      return json(res, 200, { token: bridgeToken });
+      let b = {}; try { b = await body(req); } catch {}
+      const browserName = /^[A-Za-z ]{3,30}$/.test(b.browser || '') ? b.browser : 'Browser';
+      // Same extension as before -> its space. The first extension after upgrading takes over the
+      // original space; any other browser becomes a new space.
+      let s = spaces.list.find(x => x.origin === origin) || spaces.list.find(x => !x.origin);
+      if (!s) {
+        const base = browserName.replace(/^Google /, '').replace(/^Microsoft /, '').replace(/ Browser$/, '');
+        let name = base, n = 2; while (spaces.list.some(x => x.name.toLowerCase() === name.toLowerCase())) name = `${base} ${n++}`;
+        s = { id: crypto.randomBytes(5).toString('hex'), name, origin, token: crypto.randomBytes(18).toString('base64url'), browser: browserName, private: false };
+        spaces.list.push(s);
+        fs.mkdirSync(f(path.join('spaces', s.id)), { recursive: true, mode: 0o700 });
+        log(`New space "${name}" from ${browserName}.`);
+      }
+      s.origin = origin; s.browser = browserName; saveSpaces();
+      audit({ event: 'bridge.hello', extension: origin, space: s.name });
+      pushSnapshot();
+      return json(res, 200, { token: s.token, space: s.name });
     }
     if (isBridge) {
       const given = String(req.headers['x-aura-bridge'] || '');
-      if (given.length !== bridgeToken.length || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(bridgeToken))) return json(res, 401, { error: 'bad bridge token' });
+      const s = spaces.list.find(x => x.token.length === given.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(x.token)));
+      if (!s) return json(res, 401, { error: 'bad bridge token' });
+      const r = R(s.id);
       if (url.pathname === '/bridge/ingest' && req.method === 'POST') {
         const b = await body(req);
-        inbox = { ...(inbox || {}), ...b, errors: b.errors || {}, receivedAt: Date.now() };
-        writeJson('inbox.json', inbox);
+        r.inbox = { ...(r.inbox || {}), ...b, errors: b.errors || {}, receivedAt: Date.now() };
+        writeJson(sp(s.id, 'inbox.json'), r.inbox);
         pushSnapshot();
-        return json(res, 200, { ok: true, config: bridgeConfig() });
+        return json(res, 200, { ok: true, config: bridgeConfig(s.id) });
       }
       if (url.pathname === '/bridge/jobs') {
-        bridgeSeen = Date.now();
-        if (jobPoller) { clearTimeout(jobPoller.timer); json(jobPoller.res, 200, { jobs: [], config: bridgeConfig() }); }
-        const timer = setTimeout(() => { if (jobPoller?.res === res) { jobPoller = null; json(res, 200, { jobs: [], config: bridgeConfig() }); } }, 25000);
-        jobPoller = { res, timer };
-        req.on('close', () => { if (jobPoller?.res === res) { clearTimeout(timer); jobPoller = null; } });
-        return flushJobs();
+        r.seen = Date.now();
+        answerPoll(s.id);
+        const timer = setTimeout(() => { if (r.poller?.res === res) answerPoll(s.id); }, 25000);
+        r.poller = { res, timer };
+        req.on('close', () => { if (r.poller?.res === res) { clearTimeout(timer); r.poller = null; } });
+        return flushJobs(s.id);
       }
       if (url.pathname === '/bridge/result' && req.method === 'POST') {
         const b = await body(req);
         const w = jobWaiters.get(b.id);
-        if (w) { jobWaiters.delete(b.id); clearTimeout(w.timer); b.ok ? w.resolve(b.result) : w.reject(new Error(b.error || 'The browser action failed')); }
+        if (w && w.space === s.id) { jobWaiters.delete(b.id); clearTimeout(w.timer); b.ok ? w.resolve(b.result) : w.reject(new Error(b.error || 'The browser action failed')); }
         return json(res, 200, { ok: true });
       }
       return json(res, 404, { error: 'not found' });

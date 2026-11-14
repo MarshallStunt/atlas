@@ -19,8 +19,8 @@ async function ensureToken() {
   if (s.token) return s;
   const r = await fetch(s.agent + '/bridge/hello', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ browser: browserName() }) });
   if (!r.ok) throw new Error(r.status === 403 ? 'browser access is switched off in the agent' : 'agent said ' + r.status);
-  const { token } = await r.json();
-  await chrome.storage.local.set({ token });
+  const { token, space } = await r.json();
+  await chrome.storage.local.set({ token, space: space || '' });
   return { ...s, token };
 }
 async function toAgent(path, opts = {}) {

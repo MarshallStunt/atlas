@@ -40,44 +40,52 @@ export function connections(net = {}) {
   else if (!dev.online) add('Computer', `${dev.name}`, 'error', `Offline${dev.lastSeen ? ', last seen ' + ago(Date.parse(dev.lastSeen)) : ''}.`, { type: 'text', how: 'Make sure the computer is awake and online. Aura starts at login; to restart it run: launchctl kickstart -k gui/$(id -u)/com.aura.agent' });
   else add('Computer', `${dev.name}`, 'ok', `Online · ${snap?.computer?.platform || dev.platform}`);
 
-  const syncAge = bridge.lastSync ? Date.now() - bridge.lastSync : Infinity;
-  const pollAge = bridge.lastPoll ? Date.now() - bridge.lastPoll : Infinity;
-  const bridgeOk = dev?.online && syncAge < 3 * 60000;
-  const extHow = `On the computer, open chrome://extensions (or edge://extensions), turn on Developer mode, and remove any older Aura Bridge or Relay Bridge. Then click Load unpacked and pick:\n${bridge.folder || 'the Aura extension folder'}\n\nThat folder is kept up to date by Aura, and the extension reloads itself after updates, so this is a one-time step.`;
-  if (!dev) {}
-  else if (!caps.browser_read) add('Computer', 'Browser extension', 'off', 'Reading web apps is switched off on the computer.', { type: 'text', how: 'Turn on "Read your signed-in web apps" at http://127.0.0.1:8101 on the computer.' });
-  else if (bridgeOk && bridge.version && bridge.expected && bridge.version !== bridge.expected) add('Computer', 'Browser extension', 'warn', `Working, but it's an older copy (${bridge.version}; Aura has ${bridge.expected}). It's loaded from an old folder.`, { type: 'text', how: extHow });
-  else if (bridgeOk) add('Computer', 'Browser extension', 'ok', `Syncing · last update ${ago(bridge.lastSync)}`);
-  else if (pollAge < 3 * 60000) add('Computer', 'Browser extension', 'warn', `Connected, last full sync ${bridge.lastSync ? ago(bridge.lastSync) : 'not yet'}.`, { type: 'reconnect', label: 'Resync now' });
-  else add('Computer', 'Browser extension', 'error', `${bridge.lastSync ? `Not syncing since ${ago(bridge.lastSync)}.` : 'Never connected.'} Aura restarts the browser by itself if it's closed; if it stays red, the extension needs reloading.`, { type: 'text', how: extHow });
+  // ---- each browser (space) on the computer: its extension, apps and open web apps ----
+  const spaceList = snap?.spaces || [{ name: '', inbox: snap?.inbox || {}, bridge: snap?.bridge || {}, apps: snap?.apps, browser: '' }];
+  const multi = spaceList.length > 1;
+  for (const spc of spaceList) {
+    const inbox = spc.inbox || {}, bridge = spc.bridge || {}, errs = inbox.errors || {}, spApps = spc.apps, sbrowser = spc.browser || '';
+    const G = g => multi ? `${spc.name}${spc.private ? ' (private)' : ''} · ${g}` : g;
+    const syncAge = bridge.lastSync ? Date.now() - bridge.lastSync : Infinity;
+    const pollAge = bridge.lastPoll ? Date.now() - bridge.lastPoll : Infinity;
+    const bridgeOk = dev?.online && syncAge < 3 * 60000;
+    const extHow = `On the computer, open chrome://extensions (or edge://extensions), turn on Developer mode, and remove any older Aura Bridge or Relay Bridge. Then click Load unpacked and pick:\n${bridge.folder || 'the Aura extension folder'}\n\nThat folder is kept up to date by Aura, and the extension reloads itself after updates, so this is a one-time step.`;
+    if (!dev) {}
+    else if (!caps.browser_read) add(G('Computer'), `Browser extension${multi ? ' · ' + sbrowser : ''}`, 'off', 'Reading web apps is switched off on the computer.', { type: 'text', how: 'Turn on "Read your signed-in web apps" at http://127.0.0.1:8101 on the computer.' });
+    else if (bridgeOk && bridge.version && bridge.expected && bridge.version !== bridge.expected) add(G('Computer'), `Browser extension${multi ? ' · ' + sbrowser : ''}`, 'warn', `Working, but it's an older copy (${bridge.version}; Aura has ${bridge.expected}). It's loaded from an old folder.`, { type: 'text', how: extHow });
+    else if (bridgeOk) add(G('Computer'), `Browser extension${multi ? ' · ' + sbrowser : ''}`, 'ok', `Syncing · last update ${ago(bridge.lastSync)}`);
+    else if (pollAge < 3 * 60000) add(G('Computer'), `Browser extension${multi ? ' · ' + sbrowser : ''}`, 'warn', `Connected, last full sync ${bridge.lastSync ? ago(bridge.lastSync) : 'not yet'}.`, { type: 'reconnect', label: 'Resync now' });
+    else add(G('Computer'), `Browser extension${multi ? ' · ' + sbrowser : ''}`, 'error', `${bridge.lastSync ? `Not syncing since ${ago(bridge.lastSync)}.` : 'Never connected.'} Aura restarts the browser by itself if it's closed; if it stays red, the extension needs reloading.`, { type: 'text', how: extHow });
 
-  // ---- core apps ----
-  const appsOn = Object.fromEntries((snap?.apps?.list || []).map(a => [a.id, a.on]));
-  const app = (name, key, data, okText, url) => {
-    if (!dev) return;
-    const id = { gmail: 'gmail', calendar: 'gcal', slack: 'slack', outlook: 'outlook' }[key];
-    if (appsOn[id] === false) return add('Apps', name, 'off', 'Turned off for this computer.', goto('Change', 'apps'));
-    if (!caps.browser_read) return add('Apps', name, 'off', 'Off: reading web apps is switched off on the computer.');
-    if (errs[key] && /^SIGN_IN:/.test(errs[key])) return add('Apps', name, 'error', errs[key].replace(/^SIGN_IN:\s*/, '') + ' Aura can\'t sign in for you.', open(`Open ${name} to sign in`, url));
-    if (errs[key]) return add('Apps', name, 'warn', `${errs[key].replace(/; retrying next minute$/, '')}. Aura retries automatically every minute.`, { type: 'reconnect', label: 'Retry now' });
-    if (!data) return add('Apps', name, 'off', 'No data yet.', open(`Open ${name} on computer`, url));
-    if (!dev.online) return add('Apps', name, 'warn', 'Showing the last data from before the computer went offline.');
-    if (!bridgeOk) return add('Apps', name, 'warn', bridge.lastSync ? `Showing data from ${ago(bridge.lastSync)}: the browser extension isn't syncing.` : 'Showing old data: the browser extension isn\'t syncing.');
-    add('Apps', name, 'ok', okText(data));
-  };
-  app('Gmail', 'gmail', inbox.gmail, d => `${d.unread} unread`, 'https://mail.google.com/');
-  app('Google Calendar', 'calendar', inbox.calendar, d => `${(d.events || []).length} upcoming events`, 'https://calendar.google.com/');
-  if (appsOn.outlook === true) app('Outlook (mail & calendar)', 'outlook', inbox.outlook, d => `${d.who ? d.who + ' · ' : ''}${d.unread} unread · ${(d.events || []).length} events${d.calendarError ? ' · calendar: ' + d.calendarError.replace(/^SIGN_IN:\s*/, '') : ''}`, snap?.apps?.outlookMailUrl || 'https://outlook.office.com/mail/');
-  app('Slack', 'slack', inbox.slack, d => `${d.team || 'workspace'} · ${(d.mentions || []).length} recent mentions`, 'https://app.slack.com/client');
+    // ---- core apps ----
+    const appsOn = Object.fromEntries((spApps?.list || []).map(a => [a.id, a.on]));
+    const app = (name, key, data, okText, url) => {
+      if (!dev) return;
+      const id = { gmail: 'gmail', calendar: 'gcal', slack: 'slack', outlook: 'outlook' }[key];
+      if (appsOn[id] === false) return add(G('Apps'), name, 'off', multi ? 'Turned off for this space.' : 'Turned off for this computer.', goto('Change', 'apps'));
+      if (!caps.browser_read) return add(G('Apps'), name, 'off', 'Off: reading web apps is switched off on the computer.');
+      if (errs[key] && /^SIGN_IN:/.test(errs[key])) return add(G('Apps'), name, 'error', errs[key].replace(/^SIGN_IN:\s*/, '') + ' Aura can\'t sign in for you.', open(`Open ${name} to sign in`, url));
+      if (errs[key]) return add(G('Apps'), name, 'warn', `${errs[key].replace(/; retrying next minute$/, '')}. Aura retries automatically every minute.`, { type: 'reconnect', label: 'Retry now' });
+      if (!data) return add(G('Apps'), name, 'off', 'No data yet.', open(`Open ${name} on computer`, url));
+      if (!dev.online) return add(G('Apps'), name, 'warn', 'Showing the last data from before the computer went offline.');
+      if (!bridgeOk) return add(G('Apps'), name, 'warn', bridge.lastSync ? `Showing data from ${ago(bridge.lastSync)}: the browser extension isn't syncing.` : 'Showing old data: the browser extension isn\'t syncing.');
+      add(G('Apps'), name, 'ok', okText(data));
+    };
+    app('Gmail', 'gmail', inbox.gmail, d => `${d.unread} unread`, 'https://mail.google.com/');
+    app('Google Calendar', 'calendar', inbox.calendar, d => `${(d.events || []).length} upcoming events`, 'https://calendar.google.com/');
+    if (appsOn.outlook === true) app('Outlook (mail & calendar)', 'outlook', inbox.outlook, d => `${d.who ? d.who + ' · ' : ''}${d.unread} unread · ${(d.events || []).length} events${d.calendarError ? ' · calendar: ' + d.calendarError.replace(/^SIGN_IN:\s*/, '') : ''}`, spApps?.outlookMailUrl || 'https://outlook.office.com/mail/');
+    app('Slack', 'slack', inbox.slack, d => `${d.team || 'workspace'} · ${(d.mentions || []).length} recent mentions`, 'https://app.slack.com/client');
 
-  // ---- other web apps, readable on request when open ----
-  const tabs = inbox.openTabs || [];
-  const offByName = new Set((snap?.apps?.list || []).filter(a => !a.on).map(a => a.name.split(' (')[0]));
-  for (const [name, re, url] of WEB_APPS) {
-    if (offByName.has(name) || (name === 'Google Drive & Docs' && appsOn.gdrive === false)) { add('Web apps', name, 'off', 'Turned off for this computer.'); continue; }
-    const hit = tabs.some(t => re.test(t.url || ''));
-    if (hit) add('Web apps', name, caps.browser_read && bridgeOk ? 'ok' : 'warn', caps.browser_read && bridgeOk ? 'Open in the browser: Aura can read it when you ask.' : 'Open, but the extension isn\'t syncing.');
-    else if (url) add('Web apps', name, 'idle', 'Not open. Aura can use it once it\'s open in the browser.', open(`Open ${name} on computer`, url));
+    // ---- other web apps, readable on request when open ----
+    const tabs = inbox.openTabs || [];
+    const offByName = new Set((spApps?.list || []).filter(a => !a.on).map(a => a.name.split(' (')[0]));
+    for (const [name, re, url] of WEB_APPS) {
+      if (offByName.has(name) || (name === 'Google Drive & Docs' && appsOn.gdrive === false)) { add(G('Web apps'), name, 'off', multi ? 'Turned off for this space.' : 'Turned off for this computer.'); continue; }
+      const hit = tabs.some(t => re.test(t.url || ''));
+      if (hit) add(G('Web apps'), name, caps.browser_read && bridgeOk ? 'ok' : 'warn', caps.browser_read && bridgeOk ? 'Open in the browser: Aura can read it when you ask.' : 'Open, but the extension isn\'t syncing.');
+      else if (url) add(G('Web apps'), name, 'idle', 'Not open. Aura can use it once it\'s open in the browser.', open(`Open ${name} on computer`, url));
+    }
+
   }
 
   // ---- permissions on the computer ----

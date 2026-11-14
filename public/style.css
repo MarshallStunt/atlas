@@ -273,3 +273,7 @@ a { color: inherit; text-decoration: none; }
 .chip.toggle:disabled { opacity: .5; }
 .unread-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); margin-right: 6px; vertical-align: 1px; box-shadow: 0 0 6px var(--cyan); }
 .olinks { margin: 0 0 8px 26px; padding: 4px 0 8px; border-left: 2px solid var(--line); padding-left: 12px; }
+.spaces { display: flex; gap: 6px; flex-wrap: wrap; margin: -6px 0 14px; }
+.space-chip { border: 1px solid var(--line); background: var(--glass); color: var(--dim); border-radius: 999px; padding: 6px 14px; font-size: 13px; font-weight: 600; }
+.space-chip.on { color: #04060c; background: var(--grad); border-color: transparent; box-shadow: 0 4px 18px -6px rgba(34,211,238,.6); }
+.space-settings { background: var(--glass); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; margin-bottom: 12px; }

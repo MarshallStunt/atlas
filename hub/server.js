@@ -87,7 +87,7 @@ function state() {
 
 // Direct actions from buttons on the dashboard. The user tapped them, so they count as the user's
 // own intent; the computer still applies its local policy.
-const BUTTON_ACTIONS = new Set(['open_on_computer', 'notify_computer', 'lock_computer', 'view_screen', 'get_overview', 'reconnect', 'set_apps']);
+const BUTTON_ACTIONS = new Set(['open_on_computer', 'notify_computer', 'lock_computer', 'view_screen', 'get_overview', 'reconnect', 'set_apps', 'set_space']);
 
 async function handler(req, res) {
   const url = new URL(req.url, 'http://x');
@@ -160,7 +160,7 @@ async function handler(req, res) {
       return send(res, 200, { ...network(), canChange: true });
     }
     if (p === '/api/connections') return send(res, 200, connections(network()));
-    if (p === '/api/brief') return send(res, 200, await brain.brief({ tz: url.searchParams.get('tz') || undefined, force: url.searchParams.get('force') === '1' }));
+    if (p === '/api/brief') return send(res, 200, await brain.brief({ tz: url.searchParams.get('tz') || undefined, force: url.searchParams.get('force') === '1', view: url.searchParams.get('view') || 'all' }));
     if (p === '/api/stt' && req.method === 'POST') {
       const audio = await readRaw(req, 15 * 1024 * 1024);
       if (audio.length < 1000) return send(res, 200, { text: '' });
@@ -192,12 +192,12 @@ async function handler(req, res) {
       return send(res, 200, { ok: true });
     }
     if (p === '/api/chat' && req.method === 'POST') {
-      const { text, tz } = await readBody(req);
+      const { text, tz, view } = await readBody(req);
       if (!String(text || '').trim()) return send(res, 400, { error: 'Say or type something first.' });
       // Newline-delimited JSON events, streamed as they happen.
       res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
       const emit = ev => { if (!res.writableEnded) res.write(JSON.stringify(ev) + '\n'); };
-      try { await brain.chat(text, { tz, emit }); emit({ type: 'done' }); }
+      try { await brain.chat(text, { tz, emit, view }); emit({ type: 'done' }); }
       catch (e) { emit({ type: 'error', error: friendly(e) }); }
       return res.end();
     }
