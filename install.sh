@@ -15,7 +15,8 @@ say() { printf '\033[36m→ %s\033[0m\n' "$1"; }
 NODE="$(command -v node || true)"
 if [ -z "$NODE" ] || [ "$("$NODE" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -lt 20 ]; then
   NODE="$AURA_HOME/node/bin/node"
-  if [ ! -x "$NODE" ]; then
+  if [ -x "$NODE" ]; then say "Using Node.js already set up for Aura"
+  else
     case "$(uname -s)" in Darwin) OS=darwin;; Linux) OS=linux;; *) echo "Unsupported system"; exit 1;; esac
     case "$(uname -m)" in arm64|aarch64) ARCH=arm64;; x86_64|amd64) ARCH=x64;; *) echo "Unsupported CPU"; exit 1;; esac
     say "Getting Node.js (one time, about 30 MB)"
@@ -35,13 +36,18 @@ PATH="$(dirname "$NODE"):$PATH"; export PATH
 HERE="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
 if [ -n "$HERE" ] && [ -f "$HERE/package.json" ] && grep -q '"name": "aura"' "$HERE/package.json"; then DIR="$HERE"
 else
-  say "Downloading Aura"
-  DIR="$AURA_HOME/app"; rm -rf "$AURA_HOME/extract"; mkdir -p "$AURA_HOME/extract"
+  DIR="$AURA_HOME/app"
+  if [ -d "$DIR" ]; then say "Updating Aura to the latest version"; else say "Downloading Aura"; fi
+  rm -rf "$AURA_HOME/extract"; mkdir -p "$AURA_HOME/extract"
   curl -fsSL https://github.com/MarshallStunt/aura/archive/refs/heads/main.tar.gz | tar -xz -C "$AURA_HOME/extract"
-  rm -rf "$DIR"; mv "$AURA_HOME/extract/aura-main" "$DIR"; rm -rf "$AURA_HOME/extract"
+  NEW="$AURA_HOME/extract/aura-main"
+  # Keep the already-installed parts when they haven't changed, so updates are quick.
+  if [ -d "$DIR/node_modules" ] && cmp -s "$DIR/package-lock.json" "$NEW/package-lock.json"; then mv "$DIR/node_modules" "$NEW/node_modules"; REUSED=1; fi
+  rm -rf "$DIR"; mv "$NEW" "$DIR"; rm -rf "$AURA_HOME/extract"
 fi
 cd "$DIR"
-say "Installing Aura's parts"; npm install --omit=dev --no-audit --no-fund --no-update-notifier --loglevel=error
+if [ -n "${REUSED:-}" ]; then say "Aura's parts are up to date"
+else say "Installing Aura's parts"; npm install --omit=dev --no-audit --no-fund --no-update-notifier --loglevel=error; fi
 [ "${AURA_SETUP_ONLY:-}" = "1" ] && { say "Setup only: Node and Aura are ready in $DIR"; exit 0; }
 
 # Stop a running Aura so the pairing step can use the ports.

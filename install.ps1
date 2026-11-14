@@ -21,6 +21,9 @@ function Say($m) { Write-Host "-> $m" -ForegroundColor Cyan }
 $node = $null
 $sys = Get-Command node -ErrorAction SilentlyContinue
 if ($sys -and [int](& $sys.Source -p "process.versions.node.split('.')[0]") -ge 20) { $node = $sys.Source }
+# Reuse the private copy from a previous install instead of downloading it again.
+$private = Join-Path $Home_ "node\node.exe"
+if (-not $node -and (Test-Path $private)) { $node = $private; Say "Using Node.js already set up for Aura" }
 if (-not $node) {
   $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
   Say "Getting Node.js (one time, about 30 MB)"
@@ -46,28 +49,40 @@ $env:Path = "$nodeDir;$env:Path"
 $npm = Join-Path $nodeDir "npm.cmd"
 if (-not (Test-Path $npm)) { $npm = "npm" }
 
-# ---------- 2. Aura itself (this folder if run from it, otherwise download it) ----------
+# Stop a running Aura before its files are replaced.
+Get-ScheduledTask -TaskName "Aura" -ErrorAction SilentlyContinue | Stop-ScheduledTask -ErrorAction SilentlyContinue
+
+# ---------- 2. Aura itself (this folder if run from it, otherwise download the latest) ----------
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { "" }
+$reused = $false
 if ($here -and (Test-Path (Join-Path $here "package.json"))) { $Dir = $here }
 else {
-  Say "Downloading Aura"
   $Dir = Join-Path $Home_ "app"
+  Say $(if (Test-Path $Dir) { "Updating Aura to the latest version" } else { "Downloading Aura" })
   $zip = Join-Path $Home_ "aura.zip"
   Invoke-WebRequest "https://github.com/MarshallStunt/aura/archive/refs/heads/main.zip" -OutFile $zip -UseBasicParsing
   $tmp = Join-Path $Home_ "extract"
   if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
   Expand-Archive $zip -DestinationPath $tmp -Force
+  $new = Join-Path $tmp "aura-main"
+  # Keep the already-installed parts when they haven't changed, so updates are quick.
+  $oldLock = Join-Path $Dir "package-lock.json"; $oldMods = Join-Path $Dir "node_modules"
+  if ((Test-Path $oldMods) -and (Test-Path $oldLock) -and ((Get-FileHash $oldLock).Hash -eq (Get-FileHash (Join-Path $new "package-lock.json")).Hash)) {
+    Move-Item $oldMods (Join-Path $new "node_modules"); $reused = $true
+  }
   if (Test-Path $Dir) { Remove-Item -Recurse -Force $Dir }
-  Move-Item (Join-Path $tmp "aura-main") $Dir
+  Move-Item $new $Dir
   Remove-Item -Recurse -Force $tmp, $zip
 }
 Set-Location $Dir
-Say "Installing Aura's parts"
-& $npm install --omit=dev --no-audit --no-fund --no-update-notifier --loglevel=error
-if ($LASTEXITCODE -ne 0) { throw "npm install failed." }
+if ($reused) { Say "Aura's parts are up to date" }
+else {
+  Say "Installing Aura's parts"
+  & $npm install --omit=dev --no-audit --no-fund --no-update-notifier --loglevel=error
+  if ($LASTEXITCODE -ne 0) { throw "npm install failed." }
+}
 
 # ---------- 3. Pair this PC ----------
-Get-ScheduledTask -TaskName "Aura" -ErrorAction SilentlyContinue | Stop-ScheduledTask -ErrorAction SilentlyContinue
 $hubProc = $null
 if (-not $Hub) {
   $entry = Join-Path $Dir "start.js"; $Hub = "http://127.0.0.1:8100"; $name = "Aura (hub + agent)"
