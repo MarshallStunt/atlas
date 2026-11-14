@@ -403,6 +403,20 @@ function sync() {
   return syncing;
 }
 
+// When an app is turned off for this space, close the pinned tab Aura opened for it.
+// Only Aura's own tabs (remembered by ID) are closed; tabs you opened yourself are never touched.
+async function closeTurnedOffTabs(apps) {
+  const { tabs = {}, ownTabs = {} } = await chrome.storage.local.get(['tabs', 'ownTabs']);
+  const plan = [['gmail', tabs, 'Gmail'], ['gcal', tabs, 'Google Calendar'], ['slack', tabs, 'Slack'], ['outlook', ownTabs, 'Outlook mail'], ['outlook', ownTabs, 'Outlook calendar']];
+  let changed = false;
+  for (const [id, map, key] of plan) {
+    if (apps[id] !== false || !map[key]) continue;
+    await chrome.tabs.remove(map[key]).catch(() => {});
+    delete map[key]; delete map[key + ':loaded']; changed = true;
+  }
+  if (changed) await chrome.storage.local.set({ tabs, ownTabs });
+}
+
 // Icon badge: nothing when all is well, "!" when something needs you.
 function updateBadge(ok, apps) {
   const bad = Object.entries(apps || {}).filter(([, a]) => a.state === 'signin' || a.state === 'warn');
@@ -418,6 +432,7 @@ chrome.storage.local.get('appConfig').then(r => { appConfig ||= r.appConfig || n
 function setConfig(c) {
   if (!c || !c.apps) return;
   appConfig = c; chrome.storage.local.set({ appConfig: c });
+  closeTurnedOffTabs(c.apps);
   maybeSelfUpdate(c.bridgeVersion);
 }
 // When Aura is updated, the installer writes the new extension files into this extension's folder;

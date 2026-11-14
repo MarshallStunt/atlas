@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Aura Bridge",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Connects this browser to Aura on your computer: reads the web apps you're signed in to (mail, calendar, chat) and hands them only to the Aura agent here.",
   "permissions": [
     "storage",
