@@ -17,27 +17,27 @@ commands to get things done. Works with Windows, macOS and Linux computers, and 
 - **agent/**: runs on the work computer **as the user** (never as admin). It dials out to the hub, so no port is opened. It proves its identity with an Ed25519 device key (`~/.aura-agent`, owner-only), and it checks **its own local policy** before every action.
 - **bridge/**: one Chrome / Edge / Brave extension that gives Aura read access to every web app you're already signed in to (Gmail, Outlook, Calendar, Slack, Teams, Jira…). There's nothing to link app by app. It connects to the agent by itself, and desktop apps are covered by screen view.
 
-## Setup (one time)
+## Install (one time, no admin, nothing to install first)
 
-macOS / Linux:
-```bash
-./install.sh
-```
-Windows (PowerShell, as yourself):
+The installer gets everything it needs, including its own copy of Node.js from nodejs.org (checksum-verified), pairs the computer, adds an **Aura** icon, and starts Aura at login.
+
+**Windows:** open PowerShell and paste:
 ```powershell
-.\install.ps1
+irm https://raw.githubusercontent.com/MarshallStunt/aura/main/install.ps1 | iex
 ```
-The installer:
-1. installs the dependencies (needs Node.js 20+);
-2. starts the hub so you can set your PIN at http://127.0.0.1:8100 **on the computer itself**;
-3. shows a pairing code, which you enter under **Devices**;
-4. registers Aura to start at login (launchd / systemd user service / Task Scheduler).
+If you downloaded the folder, double-click **Install Aura (Windows).cmd** instead.
 
-Then load the `bridge` folder once per browser: open `chrome://extensions` or `edge://extensions`, turn on Developer mode, and click **Load unpacked**. For company-wide rollout, IT can force-install the extension instead.
+**Mac / Linux:** open Terminal and paste:
+```bash
+curl -fsSL https://raw.githubusercontent.com/MarshallStunt/aura/main/install.sh | sh
+```
+If you downloaded the folder, double-click **Install Aura (Mac).app** instead. If it came from a zip, right-click it and choose **Open** the first time.
 
-To use a hub on another machine: `./install.sh --hub=https://HUB` or `.\install.ps1 -Hub https://HUB`.
+During setup, Aura opens in your browser. Set a PIN there, go to **System**, and type the pairing code the installer shows. At the end:
+- **Aura icon:** on your Desktop and in Applications or the Start menu. It opens Aura in its own window.
+- **Browser extension (once):** the extensions page and the `bridge` folder open for you. Turn on **Developer mode**, click **Load unpacked**, and pick that folder. It connects by itself.
 
-Run by hand instead: `npm start` (hub and agent), or `npm run hub` / `npm run agent`.
+To pair with a hub hosted elsewhere: run `AURA_HUB=https://HUB` before the Mac line, or `$env:AURA_HUB="https://HUB"` before the Windows line.
 
 ## Opening it on your phone
 
