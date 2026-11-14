@@ -16,6 +16,7 @@ $ProgressPreference = "SilentlyContinue"   # makes downloads much faster in Wind
 $Home_ = Join-Path $env:LOCALAPPDATA "Aura"
 New-Item -ItemType Directory -Force -Path $Home_ | Out-Null
 function Say($m) { Write-Host "-> $m" -ForegroundColor Cyan }
+Write-Host "Aura installer (version 2026-11-14.4)" -ForegroundColor DarkGray
 
 # ---------- 1. Node.js (use yours if it's 20+, otherwise a private copy) ----------
 $node = $null
@@ -24,6 +25,7 @@ if ($sys -and [int](& $sys.Source -p "process.versions.node.split('.')[0]") -ge 
 # Reuse the private copy from a previous install instead of downloading it again.
 $private = Join-Path $Home_ "node\node.exe"
 if (-not $node -and (Test-Path $private)) { $node = $private; Say "Using Node.js already set up for Aura" }
+if ($node -and $node -ne $private) { Say "Using your Node.js ($node)" }
 if (-not $node) {
   $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
   Say "Getting Node.js (one time, about 30 MB)"

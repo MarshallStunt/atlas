@@ -10,6 +10,7 @@ AURA_HOME="$HOME/.aura"; mkdir -p "$AURA_HOME"
 HUB="${AURA_HUB:-}"
 for a in "$@"; do case "$a" in --hub=*) HUB="${a#--hub=}";; esac; done
 say() { printf '\033[36m→ %s\033[0m\n' "$1"; }
+printf '\033[90mAura installer (version 2026-11-14.4)\033[0m\n'
 
 # ---------- 1. Node.js: yours if it's 20+, otherwise a private copy ----------
 NODE="$(command -v node || true)"
