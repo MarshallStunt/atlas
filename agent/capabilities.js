@@ -231,19 +231,19 @@ export function makeTools({ overview, browser }) {
    Computers differ (Gmail here, Outlook there). "synced" apps feed the dashboard; the rest are read
    only when you ask. Turned-off apps are not synced, not opened, not read and not acted in. */
 export const APPS = [
-  { id: 'gmail', name: 'Gmail', kind: 'mail', synced: true, match: 'mail\\.google\\.com' },
-  { id: 'gcal', name: 'Google Calendar', kind: 'calendar', synced: true, match: 'calendar\\.google\\.com' },
-  { id: 'slack', name: 'Slack', kind: 'chat', synced: true, match: '(^|\\.)slack\\.com' },
-  { id: 'outlook', name: 'Outlook (mail & calendar)', kind: 'mail', synced: true, def: false, match: 'outlook\\.(office|office365|live)\\.com|outlook\\.cloud\\.microsoft' },
-  { id: 'teams', name: 'Microsoft Teams', kind: 'chat', match: 'teams\\.(microsoft|live|cloud\\.microsoft)\\.com|teams\\.cloud\\.microsoft' },
-  { id: 'gdrive', name: 'Google Drive & Docs', kind: 'docs', match: '(drive|docs|sheets|slides)\\.google\\.com' },
-  { id: 'jira', name: 'Jira', kind: 'work', match: 'atlassian\\.net/(jira|browse|projects|secure)' },
-  { id: 'confluence', name: 'Confluence', kind: 'docs', match: 'atlassian\\.net/wiki' },
-  { id: 'github', name: 'GitHub', kind: 'work', match: '(^|\\.)github\\.com' },
-  { id: 'notion', name: 'Notion', kind: 'docs', match: 'notion\\.(so|site)' },
-  { id: 'salesforce', name: 'Salesforce', kind: 'work', match: '(salesforce|force|lightning\\.force)\\.com' },
-  { id: 'zoom', name: 'Zoom (web)', kind: 'meeting', match: '(^|\\.)zoom\\.us' },
-  { id: 'linear', name: 'Linear', kind: 'work', match: 'linear\\.app' },
+  { id: 'gmail', url: 'https://mail.google.com/mail/u/0/', name: 'Gmail', kind: 'mail', synced: true, match: 'mail\\.google\\.com' },
+  { id: 'gcal', url: 'https://calendar.google.com/calendar/u/0/r', name: 'Google Calendar', kind: 'calendar', synced: true, match: 'calendar\\.google\\.com' },
+  { id: 'slack', url: 'https://app.slack.com/client', name: 'Slack', kind: 'chat', synced: true, match: '(^|\\.)slack\\.com' },
+  { id: 'outlook', url: 'https://outlook.office.com/mail/', name: 'Outlook (mail & calendar)', kind: 'mail', synced: true, def: false, match: 'outlook\\.(office|office365|live)\\.com|outlook\\.cloud\\.microsoft' },
+  { id: 'teams', url: 'https://teams.microsoft.com/', name: 'Microsoft Teams', kind: 'chat', match: 'teams\\.(microsoft|live|cloud\\.microsoft)\\.com|teams\\.cloud\\.microsoft' },
+  { id: 'gdrive', url: 'https://drive.google.com/', name: 'Google Drive & Docs', kind: 'docs', match: '(drive|docs|sheets|slides)\\.google\\.com' },
+  { id: 'jira', url: 'https://home.atlassian.com/', name: 'Jira', kind: 'work', match: 'atlassian\\.net/(jira|browse|projects|secure)' },
+  { id: 'confluence', url: 'https://home.atlassian.com/', name: 'Confluence', kind: 'docs', match: 'atlassian\\.net/wiki' },
+  { id: 'github', url: 'https://github.com/', name: 'GitHub', kind: 'work', match: '(^|\\.)github\\.com' },
+  { id: 'notion', url: 'https://www.notion.so/', name: 'Notion', kind: 'docs', match: 'notion\\.(so|site)' },
+  { id: 'salesforce', url: 'https://login.salesforce.com/', name: 'Salesforce', kind: 'work', match: '(salesforce|force|lightning\\.force)\\.com' },
+  { id: 'zoom', url: 'https://zoom.us/signin', name: 'Zoom (web)', kind: 'meeting', match: '(^|\\.)zoom\\.us' },
+  { id: 'linear', url: 'https://linear.app/', name: 'Linear', kind: 'work', match: 'linear\\.app' },
 ];
 const appRe = Object.fromEntries(APPS.map(a => [a.id, new RegExp(a.match, 'i')]));
 const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

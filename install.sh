@@ -116,7 +116,8 @@ esac
 URL="$HUB"
 if [ "$(uname)" = Darwin ]; then
   APP="$HOME/Applications/Atlas.app"; mkdir -p "$HOME/Applications"; rm -rf "$APP"
-  osacompile -o "$APP" -e "do shell script \"open -na 'Google Chrome' --args --app=$URL --new-window 2>/dev/null || open -na 'Microsoft Edge' --args --app=$URL 2>/dev/null || open $URL\"" >/dev/null
+  # The icon also starts Atlas if it isn't running (e.g. it was stopped), then opens it.
+  osacompile -o "$APP" -e "do shell script \"launchctl kickstart gui/$(id -u)/com.atlas.agent >/dev/null 2>&1; sleep 1; open -na 'Google Chrome' --args --app=$URL --new-window 2>/dev/null || open -na 'Microsoft Edge' --args --app=$URL 2>/dev/null || open $URL\"" >/dev/null
   cp "$DIR/assets/atlas.icns" "$APP/Contents/Resources/applet.icns"
   rm -f "$APP/Contents/Resources/Assets.car"   # otherwise macOS shows the default script icon
   /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$APP/Contents/Info.plist" 2>/dev/null || true
