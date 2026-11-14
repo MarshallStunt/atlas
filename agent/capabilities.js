@@ -246,11 +246,22 @@ export const APPS = [
   { id: 'linear', name: 'Linear', kind: 'work', match: 'linear\\.app' },
 ];
 const appRe = Object.fromEntries(APPS.map(a => [a.id, new RegExp(a.match, 'i')]));
-export const appOf = url => { const u = String(url || '').replace(/^https?:\/\//, ''); return APPS.find(a => appRe[a.id].test(u)) || null; };
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// An organization's own Outlook server (e.g. owa.school.edu) counts as Outlook too.
+export const outlookHosts = choices => [choices.outlookMailUrl, choices.outlookCalUrl].filter(Boolean).map(u => { try { return new URL(u).host; } catch { return null; } }).filter(Boolean);
+export const matcherFor = (app, choices) => app.id === 'outlook' && outlookHosts(choices || {}).length ? `${app.match}|${outlookHosts(choices).map(escRe).join('|')}` : app.match;
+export const appOf = (url, choices) => { const u = String(url || '').replace(/^https?:\/\//, ''); return APPS.find(a => (choices ? new RegExp(matcherFor(a, choices), 'i') : appRe[a.id]).test(u)) || null; };
+// "owa.school.edu/#path=/mail" -> "https://owa.school.edu/#path=/mail"; empty stays empty.
+export function cleanLink(v) {
+  v = String(v || '').trim(); if (!v) return '';
+  if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
+  const u = new URL(v); if (u.protocol !== 'https:') throw new Error('Use an https link.');
+  return u.toString();
+}
 // Is reading/acting on this page allowed by the app choices? { ok, app, reason }
 export function urlAllowed(url, choices) {
   if (!/^https?:\/\//i.test(String(url || ''))) return { ok: true };
-  const app = appOf(url);
+  const app = appOf(url, choices);
   if (app) return choices.apps[app.id] === false ? { ok: false, app, reason: `${app.name} is turned off for this computer in Aura (System → Apps).` } : { ok: true, app };
   return choices.otherSites === false ? { ok: false, reason: 'Only the apps chosen for this computer can be read (System → Apps → Other websites is off).' } : { ok: true };
 }

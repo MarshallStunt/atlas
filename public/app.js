@@ -650,10 +650,27 @@ function appsPanel() {
   const sw = (id, name, on, sub) => `<div class="conn ${on ? 'ok' : 'off'}"><span class="cdot"></span><div class="cmain"><div class="cname">${esc(name)}</div>${sub ? `<div class="cdet">${esc(sub)}</div>` : ''}</div><button class="chip toggle" data-app="${esc(id)}" aria-pressed="${on}" ${d.online ? '' : 'disabled'}><span class="led"></span>${on ? 'On' : 'Off'}</button></div>`;
   return `<div class="panel-head"><span class="label">Apps on ${esc(d.name)}</span></div>
     <p class="dim" style="font-size:13px;margin:0 0 6px">Choose what Aura uses on this computer. Off means not synced, not opened, and not read even when you ask.</p>
-    <div class="conn-group">On the dashboard</div>${a.list.filter(x => x.synced).map(x => sw(x.id, x.name, x.on)).join('')}
+    <div class="conn-group">On the dashboard</div>${a.list.filter(x => x.synced).map(x => sw(x.id, x.name, x.on) + (x.id === 'outlook' && x.on ? outlookLinks(a, d) : '')).join('')}
     <div class="conn-group">Read when you ask</div>${a.list.filter(x => !x.synced).map(x => sw(x.id, x.name, x.on)).join('')}
     ${sw('__other', 'Other websites', a.otherSites, 'Any site not listed above, open in the browser')}`;
 }
+// Optional: an organization's own Outlook server (left empty = Microsoft 365, outlook.office.com).
+function outlookLinks(a, d) {
+  return `<form class="olinks" id="outlook-links">
+    <div class="field"><label for="ol-mail">Mail link (optional)</label><input id="ol-mail" value="${esc(a.outlookMailUrl || '')}" placeholder="Leave empty for Microsoft 365, or paste e.g. owa.school.edu/#path=/mail" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+    <div class="field"><label for="ol-cal">Calendar link (optional)</label><input id="ol-cal" value="${esc(a.outlookCalUrl || '')}" placeholder="e.g. owa.school.edu/#path=/calendar/view/workweek" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+    <div class="row-actions" style="margin-top:0"><button class="btn sm glow" ${d.online ? '' : 'disabled'}>Save links</button></div>
+    <p class="dim" style="font-size:12px;margin:6px 0 0">Use these if your school or company runs its own Outlook. Open your mail and calendar in the browser on this computer and copy the addresses.</p></form>`;
+}
+$('#view-system').addEventListener('submit', async e => {
+  if (e.target.id !== 'outlook-links') return;
+  e.preventDefault();
+  try {
+    await api('/api/action', { method: 'POST', body: { tool: 'set_apps', input: { outlookMailUrl: $('#ol-mail').value, outlookCalUrl: $('#ol-cal').value } } });
+    toast('Saved. Aura opens Outlook with these links within a minute.');
+    await new Promise(r => setTimeout(r, 500)); await refresh(true); $('#sec-apps').innerHTML = appsPanel(); loadConnections();
+  } catch (err) { toast(err.message); }
+});
 $('#view-system').addEventListener('click', async e => {
   const t = e.target.closest('[data-app]'); if (!t || t.disabled) return;
   const on = t.getAttribute('aria-pressed') !== 'true', id = t.dataset.app;

@@ -12,7 +12,7 @@ import path from 'node:path';
 import WebSocket from 'ws';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { POLICY_DEFAULTS, TOOL_POLICY, status, makeTools, APPS, appOf, urlAllowed } from './capabilities.js';
+import { POLICY_DEFAULTS, TOOL_POLICY, status, makeTools, APPS, appOf, urlAllowed, matcherFor, cleanLink } from './capabilities.js';
 
 const DATA = process.env.AURA_AGENT_DATA || path.join(os.homedir(), '.aura-agent');
 const LOCAL_PORT = Number(process.env.AURA_AGENT_PORT || 8101);
@@ -37,10 +37,10 @@ const allowed = key => policy()[key]?.on;
 /* ---------------- app choices for this computer ---------------- */
 function appChoices() {
   const saved = readJson('apps.json', {});
-  return { apps: Object.fromEntries(APPS.map(a => [a.id, saved.apps?.[a.id] ?? a.def !== false])), otherSites: saved.otherSites !== false };
+  return { apps: Object.fromEntries(APPS.map(a => [a.id, saved.apps?.[a.id] ?? a.def !== false])), otherSites: saved.otherSites !== false, outlookMailUrl: saved.outlookMailUrl || '', outlookCalUrl: saved.outlookCalUrl || '' };
 }
 // What the browser extension needs to know: which apps to sync and which sites it may read.
-const bridgeConfig = () => { const c = appChoices(); return { apps: c.apps, otherSites: c.otherSites, matchers: Object.fromEntries(APPS.map(a => [a.id, a.match])) }; };
+const bridgeConfig = () => { const c = appChoices(); return { apps: c.apps, otherSites: c.otherSites, outlook: { mail: c.outlookMailUrl, calendar: c.outlookCalUrl }, matchers: Object.fromEntries(APPS.map(a => [a.id, matcherFor(a, c)])) }; };
 const CORE = { gmail: 'gmail', calendar: 'gcal', slack: 'slack', outlook: 'outlook' }; // inbox key -> app id
 
 /* ---------------- bridge state (Gmail / Calendar / Slack from Chrome) ---------------- */
@@ -85,7 +85,7 @@ function overviewInbox() {
     gmail: on('gmail') && inbox.gmail ? { unread: inbox.gmail.unread, latest: (inbox.gmail.entries || []).slice(0, 15) } : null,
     outlook: on('outlook') && inbox.outlook ? { who: inbox.outlook.who, unread: inbox.outlook.unread, latest: (inbox.outlook.entries || []).slice(0, 15),
       events: (inbox.outlook.events || []).filter(e => !e.at || (e.at > now - 3600e3 && e.at < now + 4 * 864e5)).slice(0, 30), calendarError: inbox.outlook.calendarError || null,
-      ...(inbox.outlook.raw ? { raw: inbox.outlook.raw } : {}) } : null,
+      ...(inbox.outlook.raw ? { raw: inbox.outlook.raw } : {}), ...(inbox.outlook.calendarRaw ? { calendarRaw: inbox.outlook.calendarRaw } : {}) } : null,
     slack: on('slack') && inbox.slack ? { team: inbox.slack.team, mentions: (inbox.slack.mentions || []).filter(m => m.at > now - 48 * 3600e3).slice(0, 15) } : null,
     openTabs: (inbox.tabs || []).filter(t => urlAllowed(t.url, ch).ok).slice(0, 30),
     errors: Object.fromEntries(Object.entries(inbox.errors || {}).filter(([k]) => !CORE[k] || on(k))),
@@ -99,7 +99,7 @@ async function overview() {
     computer: p.status.on ? await status() : { note: 'Status is switched off on this computer.' },
     inbox: p.browser_read.on ? overviewInbox() : { note: 'Reading web apps is switched off on this computer.' },
     capabilities: Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v.on])),
-    apps: (() => { const ch = appChoices(); return { otherSites: ch.otherSites, list: APPS.map(a => ({ id: a.id, name: a.name, kind: a.kind, synced: !!a.synced, on: ch.apps[a.id] })) }; })(),
+    apps: (() => { const ch = appChoices(); return { otherSites: ch.otherSites, outlookMailUrl: ch.outlookMailUrl, outlookCalUrl: ch.outlookCalUrl, list: APPS.map(a => ({ id: a.id, name: a.name, kind: a.kind, synced: !!a.synced, on: ch.apps[a.id] })) }; })(),
     // For the Connections panel on the phone: is the browser extension alive, and where it lives.
     bridge: { lastSync: inbox?.receivedAt || null, lastPoll: bridgeSeen || null, extension: bridgeExtension || null, folder: path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'bridge') },
   };
@@ -141,8 +141,10 @@ tools.browser_read = async input => { const r = await readTool(input); const v =
 tools.browser_act = async input => { const r = await actTool(input); const v = urlAllowed(r?.after?.url, appChoices()); if (!v.ok) throw new Error(v.reason); return r; };
 
 // Choosing apps for this computer (from System → Apps on the phone). Applies at once.
-tools.set_apps = async ({ apps = {}, otherSites } = {}) => {
+tools.set_apps = async ({ apps = {}, otherSites, outlookMailUrl, outlookCalUrl } = {}) => {
   const cur = appChoices();
+  if (outlookMailUrl !== undefined) cur.outlookMailUrl = cleanLink(outlookMailUrl);
+  if (outlookCalUrl !== undefined) cur.outlookCalUrl = cleanLink(outlookCalUrl);
   for (const [id, on] of Object.entries(apps)) if (APPS.some(a => a.id === id)) cur.apps[id] = !!on;
   if (typeof otherSites === 'boolean') cur.otherSites = otherSites;
   writeJson('apps.json', cur);

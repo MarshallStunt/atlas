@@ -214,7 +214,16 @@ async function slackTabRun(job) {
 /* ---------- Outlook (Microsoft 365): read from Aura's own pinned Outlook tabs ----------
    Outlook has no simple feed, so Aura keeps two pinned tabs (inbox and work-week calendar) and reads
    what Outlook shows, using its accessibility labels. Nothing is stored except what's sent to the agent. */
-const MS_SIGN_IN = /login\.microsoftonline\.com|login\.live\.com|login\.microsoft\.com/i;
+const MS_SIGN_IN = /login\.microsoftonline\.com|login\.live\.com|login\.microsoft\.com|\/owa\/auth\/logon|\/auth\/logon\.aspx|\/adfs\/ls/i;
+// Is the tab still on the page we opened (mail vs calendar), including OWA's "#path=/mail" style links?
+function onPage(current, wanted) {
+  try {
+    const w = new URL(wanted), c = new URL(current || '');
+    if (c.host !== w.host && !MS_SIGN_IN.test(c.href)) return false;
+    const want = /calendar/i.test(w.pathname + w.hash) ? 'calendar' : 'mail';
+    return new RegExp(want, 'i').test(c.pathname + c.hash) || (want === 'mail' && !/calendar/i.test(c.pathname + c.hash));
+  } catch { return false; }
+}
 async function ownTab(key, url) {
   const stored = (await chrome.storage.local.get('ownTabs')).ownTabs || {};
   let tab = stored[key] && await chrome.tabs.get(stored[key]).catch(() => null);
@@ -223,7 +232,7 @@ async function ownTab(key, url) {
     tab = await chrome.tabs.create({ url, active: false, pinned: true });
     await chrome.storage.local.set({ ownTabs: { ...stored, [key]: tab.id } });
     fresh = true;
-  } else if (tab.discarded || !String(tab.url || '').includes(new URL(url).pathname.split('/')[1]) || Date.now() - (stored[key + ':loaded'] || 0) > 30 * 60 * 1000) {
+  } else if (tab.discarded || !onPage(tab.url, url) || Date.now() - (stored[key + ':loaded'] || 0) > 30 * 60 * 1000) {
     await chrome.tabs.update(tab.id, { url }); fresh = true; // asleep, wandered off, or 30 min old: reload
   }
   if (fresh) { await waitLoaded(tab.id, 40000); await chrome.storage.local.set({ ownTabs: { ...((await chrome.storage.local.get('ownTabs')).ownTabs || {}), [key]: tab.id, [key + ':loaded']: Date.now() } }); }
@@ -259,7 +268,7 @@ async function readOutlookMail() {
   if (folder) { const m = (folder.getAttribute('aria-label') || folder.innerText).match(/(\d+)\s*(unread)?/i); if (m) unread = Number(m[1]); }
   if (unread == null) unread = entries.filter(e => e.unread).length;
   const who = (document.title.match(/^Mail\s*-\s*(.+?)\s*-\s*Outlook/i) || [])[1] || '';
-  return { ok: true, who, unread, entries, raw: entries.length ? '' : (document.querySelector('[role="main"]')?.innerText || '').slice(0, 2500) };
+  return { ok: true, who, unread, entries, raw: entries.length ? '' : ((document.querySelector('[role="main"]') || document.body)?.innerText || '').slice(0, 3000) };
 }
 // Runs inside the Outlook calendar tab (work week view).
 async function readOutlookCalendar() {
@@ -281,11 +290,15 @@ async function readOutlookCalendar() {
     if (!ev || seen.has(ev.title + ev.date + ev.time)) continue;
     seen.add(ev.title + ev.date + ev.time); events.push(ev);
   }
-  return { ok: true, events };
+  // Older Outlook servers label things differently: if nothing matched, hand over the page text so the assistant can still read it.
+  return { ok: true, events, raw: events.length ? '' : ((document.querySelector('[role="main"]') || document.body)?.innerText || '').slice(0, 3000) };
 }
 async function outlook() {
+  // Default is Microsoft 365; an organization's own server can be set per computer (System → Apps → Outlook).
   const base = 'https://outlook.office.com';
-  const mailTab = await ownTab('Outlook mail', base + '/mail/inbox');
+  const mailUrl = appConfig?.outlook?.mail || base + '/mail/inbox';
+  const calUrl = appConfig?.outlook?.calendar || (appConfig?.outlook?.mail ? appConfig.outlook.mail.replace(/#path=\/mail.*$|\/mail.*$/i, m => m.startsWith('#') ? '#path=/calendar/view/workweek' : '/calendar/view/workweek') : base + '/calendar/view/workweek');
+  const mailTab = await ownTab('Outlook mail', mailUrl);
   const [{ result: mail } = {}] = await chrome.scripting.executeScript({ target: { tabId: mailTab.id }, func: readOutlookMail });
   if (!mail?.ok) throw new Error("couldn't read the Outlook inbox; retrying next minute");
   const now = new Date();
@@ -295,19 +308,20 @@ async function outlook() {
     if (/^yesterday/i.test(t)) return now.getTime() - 864e5;
     const d = Date.parse(/\d{4}/.test(t) ? t : `${t} ${now.getFullYear()}`); return isNaN(d) ? null : d;
   };
-  let events = [], calError = null;
+  let events = [], calError = null, calRaw = '';
   try {
-    const calTab = await ownTab('Outlook calendar', base + '/calendar/view/workweek');
+    const calTab = await ownTab('Outlook calendar', calUrl);
     const [{ result: cal } = {}] = await chrome.scripting.executeScript({ target: { tabId: calTab.id }, func: readOutlookCalendar });
+    calRaw = cal?.raw || '';
     events = (cal?.events || []).map(e => {
       const at = e.allDay ? Date.parse(e.date) : Date.parse(`${e.date} ${e.time}`);
-      return { title: e.title, date: e.date, time: e.time, end: e.end || '', info: e.info, allDay: e.allDay, at: isNaN(at) ? null : at, link: base + '/calendar/view/day', source: 'outlook' };
+      return { title: e.title, date: e.date, time: e.time, end: e.end || '', info: e.info, allDay: e.allDay, at: isNaN(at) ? null : at, link: calUrl, source: 'outlook' };
     }).sort((a, b) => (a.at || 0) - (b.at || 0));
   } catch (e) { calError = String(e.message || e); }
   return {
     who: mail.who, unread: mail.unread, calendarError: calError,
-    entries: mail.entries.map(e => ({ subject: e.subject, snippet: e.snippet, from: e.from, at: when(e.time) || Date.now(), unread: e.unread, link: base + '/mail/inbox', source: 'outlook' })),
-    events, raw: mail.raw,
+    entries: mail.entries.map(e => ({ subject: e.subject, snippet: e.snippet, from: e.from, at: when(e.time) || Date.now(), unread: e.unread, link: mailUrl, source: 'outlook' })),
+    events, raw: mail.raw, calendarRaw: calRaw,
   };
 }
 

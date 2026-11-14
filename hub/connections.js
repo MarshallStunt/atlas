@@ -66,7 +66,7 @@ export function connections(net = {}) {
   };
   app('Gmail', 'gmail', inbox.gmail, d => `${d.unread} unread`, 'https://mail.google.com/');
   app('Google Calendar', 'calendar', inbox.calendar, d => `${(d.events || []).length} upcoming events`, 'https://calendar.google.com/');
-  if (appsOn.outlook === true) app('Outlook (mail & calendar)', 'outlook', inbox.outlook, d => `${d.who ? d.who + ' · ' : ''}${d.unread} unread · ${(d.events || []).length} events${d.calendarError ? ' · calendar: ' + d.calendarError.replace(/^SIGN_IN:\s*/, '') : ''}`, 'https://outlook.office.com/mail/');
+  if (appsOn.outlook === true) app('Outlook (mail & calendar)', 'outlook', inbox.outlook, d => `${d.who ? d.who + ' · ' : ''}${d.unread} unread · ${(d.events || []).length} events${d.calendarError ? ' · calendar: ' + d.calendarError.replace(/^SIGN_IN:\s*/, '') : ''}`, snap?.apps?.outlookMailUrl || 'https://outlook.office.com/mail/');
   app('Slack', 'slack', inbox.slack, d => `${d.team || 'workspace'} · ${(d.mentions || []).length} recent mentions`, 'https://app.slack.com/client');
 
   // ---- other web apps, readable on request when open ----
