@@ -4,7 +4,7 @@
 // No passwords or Slack tokens are stored: Slack calls run inside the open Slack tab.
 
 const decode = s => String(s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
-const settings = () => chrome.storage.local.get(['agent', 'token', 'email']).then(s => ({ agent: s.agent || 'http://127.0.0.1:8101', token: s.token || '', email: s.email || '' }));
+const settings = () => chrome.storage.local.get(['agent', 'token']).then(s => ({ agent: s.agent || 'http://127.0.0.1:8101', token: s.token || '' }));
 
 // Connect to the agent on this computer without any copy-pasting: the agent hands its token only
 // to a request whose Origin is a browser extension, which web pages can't fake.
@@ -118,8 +118,21 @@ function parseWhen(dateText, timeText) {
   day.setHours(h, Number(m[2] || 0), 0, 0);
   return { at: day.getTime(), allDay: false };
 }
+// The calendar feed needs the account's address: from Gmail when it's on, otherwise read once from
+// Google Calendar itself (where this browser is already signed in) and remembered.
+async function calendarAddress(fromGmail) {
+  if (fromGmail) { chrome.storage.local.set({ calendarEmail: fromGmail }); return fromGmail; }
+  const { calendarEmail } = await chrome.storage.local.get('calendarEmail');
+  if (calendarEmail) return calendarEmail;
+  const r = await fetchSignedIn('https://calendar.google.com/calendar/u/0/r', { name: 'Google Calendar', tabPattern: 'https://calendar.google.com/*', openUrl: 'https://calendar.google.com/calendar/u/0/r',
+    good: r => r.ok && !SIGN_IN_PAGE.test(r.url) && /@/.test(r.text) });
+  const email = (r.text.match(/["'\s]([\w.+-]+@(?!google\.com|gmail-smtp)[\w-]+(?:\.[\w-]+)+)["'\s]/) || [])[1];
+  if (!email) throw new Error("couldn't tell which Google account this calendar belongs to; retrying next minute");
+  chrome.storage.local.set({ calendarEmail: email });
+  return email;
+}
 async function calendar(email) {
-  if (!email) throw new Error('needs Gmail to be on (to know your calendar address), or set the address under Advanced in this extension');
+  email = await calendarAddress(email);
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const r = await fetchSignedIn(`https://calendar.google.com/calendar/htmlembed?src=${encodeURIComponent(email)}&mode=AGENDA&ctz=${encodeURIComponent(tz)}`, {
     name: 'Google Calendar', tabPattern: 'https://calendar.google.com/*', openUrl: 'https://calendar.google.com/calendar/u/0/r',
@@ -364,7 +377,7 @@ function sync() {
     // Only the apps chosen for this computer: turned-off apps are not read and get no pinned tab.
     if (appOn('gmail')) await grab('gmail', gmail);
     await Promise.all([
-      appOn('gcal') ? grab('calendar', () => calendar(s.email || out.gmail?.email)) : null,
+      appOn('gcal') ? grab('calendar', () => calendar(out.gmail?.email)) : null,
       appOn('slack') ? grab('slack', () => slackTabRun(null)) : null,
       appConfig?.apps?.outlook === true ? grab('outlook', outlook) : null,
       grab('tabs', async () => (await listTabs()).filter(t => allowedUrl(t.url).ok)),
