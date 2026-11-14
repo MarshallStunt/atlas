@@ -1,9 +1,9 @@
-// Hub storage: small JSON files in ~/.relay-hub (owner-only permissions) and an append-only audit log.
+// Hub storage: small JSON files in ~/.aura-hub (owner-only permissions) and an append-only audit log.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const DATA = process.env.RELAY_HUB_DATA || path.join(os.homedir(), '.relay-hub');
+export const DATA = process.env.AURA_HUB_DATA || path.join(os.homedir(), '.aura-hub');
 fs.mkdirSync(DATA, { recursive: true, mode: 0o700 });
 
 const file = name => path.join(DATA, name);

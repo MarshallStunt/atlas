@@ -1,0 +1,7 @@
+node_modules
+.git
+agent
+bridge
+*.md
+install.*
+start.js

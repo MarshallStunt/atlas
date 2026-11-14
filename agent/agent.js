@@ -1,5 +1,5 @@
-// Relay agent: runs on the work computer as the signed-in user (never as root/admin).
-// - Pairs once with the hub and keeps an Ed25519 device key in ~/.relay-agent (owner-only).
+// Aura agent: runs on the work computer as the signed-in user (never as root/admin).
+// - Pairs once with the hub and keeps an Ed25519 device key in ~/.aura-agent (owner-only).
 // - Dials OUT to the hub over a WebSocket, so the computer never opens a port to the network.
 // - Checks its own local policy before every action, whatever the hub asks.
 // - Serves a local-only page (127.0.0.1:8101) where the person at the computer sets that policy,
@@ -10,10 +10,12 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
+import { spawn, execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { POLICY_DEFAULTS, TOOL_POLICY, status, makeTools } from './capabilities.js';
 
-const DATA = process.env.RELAY_AGENT_DATA || path.join(os.homedir(), '.relay-agent');
-const LOCAL_PORT = Number(process.env.RELAY_AGENT_PORT || 8101);
+const DATA = process.env.AURA_AGENT_DATA || path.join(os.homedir(), '.aura-agent');
+const LOCAL_PORT = Number(process.env.AURA_AGENT_PORT || 8101);
 fs.mkdirSync(DATA, { recursive: true, mode: 0o700 });
 const f = n => path.join(DATA, n);
 const readJson = (n, d) => { try { return JSON.parse(fs.readFileSync(f(n), 'utf8')); } catch { return d; } };
@@ -23,7 +25,7 @@ const audit = e => fs.appendFileSync(f('audit.jsonl'), JSON.stringify({ at: new 
 
 const argHub = process.argv.find(a => a.startsWith('--hub='))?.slice(6);
 let device = readJson('device.json', null);
-const hubUrl = (argHub || device?.hubUrl || process.env.RELAY_HUB || 'http://127.0.0.1:8100').replace(/\/$/, '');
+const hubUrl = (argHub || device?.hubUrl || process.env.AURA_HUB || 'http://127.0.0.1:8100').replace(/\/$/, '');
 
 /* ---------------- local policy ---------------- */
 function policy() {
@@ -42,9 +44,11 @@ let jobPoller = null;                      // the bridge's open long-poll reques
 
 let bridgeSeen = 0;        // last time the bridge asked for jobs
 let bridgeExtension = '';  // which extension connected (shown on the local page)
+let browserApp = readJson('browser.json', {}).app || 'Google Chrome'; // which browser it lives in
+let lastLaunch = 0;
 // Hand a job to the browser extension and wait for its answer.
 function browser(kind, input) {
-  if (Date.now() - bridgeSeen > 90 * 1000) return Promise.reject(new Error('The browser extension is not connected on this computer. Open Chrome / Edge / Brave with the Relay Bridge extension installed.'));
+  if (Date.now() - bridgeSeen > 90 * 1000) return Promise.reject(new Error('The browser extension is not connected on this computer. Open Chrome / Edge / Brave with the Aura Bridge extension installed.'));
   const job = { id: crypto.randomUUID(), kind, input };
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { jobWaiters.delete(job.id); reject(new Error('The browser extension did not answer in time.')); }, 60000);
@@ -78,16 +82,52 @@ async function overview() {
     computer: p.status.on ? await status() : { note: 'Status is switched off on this computer.' },
     inbox: p.browser_read.on ? overviewInbox() : { note: 'Reading web apps is switched off on this computer.' },
     capabilities: Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v.on])),
+    // For the Connections panel on the phone: is the browser extension alive, and where it lives.
+    bridge: { lastSync: inbox?.receivedAt || null, lastPoll: bridgeSeen || null, extension: bridgeExtension || null, folder: path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'bridge') },
   };
 }
 
 const tools = makeTools({ overview, browser });
 
+/* ---------------- automatic reconnection ----------------
+   If the browser extension goes quiet (browser closed, crashed, or asleep), start the browser again
+   in the background. The extension then wakes its app tabs and syncs by itself. */
+const bridgeQuiet = () => Date.now() - bridgeSeen > 3 * 60 * 1000;
+function browserRunning() {
+  if (process.platform === 'win32') return false;
+  try { return execFileSync('pgrep', ['-f', browserApp], { stdio: ['ignore', 'pipe', 'ignore'] }).length > 0; } catch { return false; }
+}
+function launchBrowser(reason) {
+  if (browserRunning()) return { launched: false, note: `${browserApp} is open but the Aura extension isn't answering. In ${browserApp}, open the extensions page and reload Aura Bridge (or load it from the Aura folder).` };
+  if (Date.now() - lastLaunch < 10 * 60 * 1000) return { launched: false, note: 'Started the browser a few minutes ago; waiting for it.' };
+  lastLaunch = Date.now();
+  const exe = { 'Google Chrome': ['chrome', 'google-chrome'], 'Microsoft Edge': ['msedge', 'microsoft-edge'], 'Brave Browser': ['brave', 'brave-browser'], Opera: ['opera', 'opera'] }[browserApp] || ['chrome', 'google-chrome'];
+  const [cmd, args] = process.platform === 'darwin' ? ['open', ['-g', '-a', browserApp]]
+    : process.platform === 'win32' ? ['powershell.exe', ['-NoProfile', '-Command', `Start-Process ${exe[0]} -WindowStyle Minimized`]]
+    : [exe[1], []];
+  try { spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true }).unref(); } catch (e) { return { launched: false, note: 'Could not start the browser: ' + e.message }; }
+  audit({ event: 'reconnect.browser_started', browser: browserApp, reason });
+  log(`Browser extension was quiet; started ${browserApp} in the background (${reason}).`);
+  return { launched: true, note: `Started ${browserApp} in the background; the extension reconnects within a minute.` };
+}
+setInterval(() => {
+  if (!allowed('browser_read') || !bridgeQuiet()) return;
+  if (!bridgeExtension && !inbox) return; // never set up on this computer: nothing to reconnect
+  launchBrowser('watchdog');
+}, 60 * 1000);
+
+tools.reconnect = async () => {
+  if (!allowed('browser_read')) return { ok: false, note: 'Reading web apps is switched off on this computer.' };
+  if (bridgeQuiet()) return launchBrowser('requested from the phone');
+  const run = await browser('resync', {});
+  return { ok: true, note: 'Browser extension resynced.', detail: run?.detail || {} };
+};
+
 async function handleCall({ id, tool, input }) {
   const key = TOOL_POLICY[tool];
   let reply;
   if (!key || !tools[tool]) reply = { ok: false, error: `Unknown action ${tool}.` };
-  else if (!allowed(key)) reply = { ok: false, error: `"${POLICY_DEFAULTS[key].label}" is switched off on this computer. It can be turned on from the Relay agent page on the computer (http://127.0.0.1:${LOCAL_PORT}).` };
+  else if (!allowed(key)) reply = { ok: false, error: `"${POLICY_DEFAULTS[key].label}" is switched off on this computer. It can be turned on from the Aura agent page on the computer (http://127.0.0.1:${LOCAL_PORT}).` };
   else {
     try { reply = { ok: true, result: await tools[tool](input || {}) }; }
     catch (e) { reply = { ok: false, error: String(e.message || e) }; }
@@ -105,7 +145,7 @@ async function pair() {
   const r = await fetch(hubUrl + '/agent/pair/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publicKey: pub, name, platform: process.platform }) });
   if (!r.ok) throw new Error('Hub refused pairing: ' + await r.text());
   const { requestId, code, expiresIn } = await r.json();
-  console.log(`\n  Pair this computer: open Relay on your phone → Devices → Pair, and enter\n\n        ${code}\n\n  (expires in ${Math.round(expiresIn / 60)} minutes)\n`);
+  console.log(`\n  Pair this computer: open Aura on your phone → Devices → Pair, and enter\n\n        ${code}\n\n  (expires in ${Math.round(expiresIn / 60)} minutes)\n`);
   pairingCode = code;
   for (;;) {
     await new Promise(res => setTimeout(res, 2000));
@@ -130,7 +170,7 @@ function connect() {
   ws.on('message', async raw => {
     let msg; try { msg = JSON.parse(raw); } catch { return; }
     if (msg.type === 'challenge') {
-      const sig = crypto.sign(null, Buffer.from(`relay:${device.deviceId}:${msg.nonce}`), crypto.createPrivateKey(device.privateKey)).toString('base64');
+      const sig = crypto.sign(null, Buffer.from(`aura:${device.deviceId}:${msg.nonce}`), crypto.createPrivateKey(device.privateKey)).toString('base64');
       ws.send(JSON.stringify({ type: 'auth', sig }));
     } else if (msg.type === 'welcome') {
       connected = true; backoff = 1000; log(`Connected to hub ${hubUrl} as ${msg.name}.`);
@@ -175,16 +215,16 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 function page() {
   const p = policy();
   const ib = overviewInbox();
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relay agent</title>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aura agent</title>
 <style>:root{color-scheme:light dark;--bg:#0b0d12;--card:#141821;--line:#262c39;--text:#e8ecf3;--dim:#8b93a7;--accent:#5eead4}
 @media (prefers-color-scheme:light){:root{--bg:#f5f6f8;--card:#fff;--line:#e1e4ea;--text:#141821;--dim:#5b6475;--accent:#0f9488}}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,system-ui,sans-serif}main{max-width:640px;margin:0 auto;padding:24px 16px}
 h1{font-size:20px;margin:0 0 4px}.dim{color:var(--dim)}.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin:16px 0}
 label{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line)}label:first-of-type{border-top:0}input{margin-top:4px;width:18px;height:18px;accent-color:var(--accent)}
 code{background:var(--bg);padding:2px 6px;border-radius:6px;word-break:break-all}.ok{color:var(--accent)}.code{font:600 28px ui-monospace,monospace;letter-spacing:.1em}</style></head><body><main>
-<h1>Relay agent on ${esc(os.hostname())}</h1><div class="dim">This page only opens on this computer. Switches here can't be changed from the phone.</div>
+<h1>Aura agent on ${esc(os.hostname())}</h1><div class="dim">This page only opens on this computer. Switches here can't be changed from the phone.</div>
 <div class="card"><b>Hub:</b> ${esc(hubUrl)} — ${device ? (connected ? '<span class="ok">connected</span>' : 'not connected') : pairingCode ? `waiting to pair. Enter this code on your phone:<div class="code">${pairingCode}</div>` : 'not paired'}</div>
-<div class="card"><b>What Relay may do on this computer</b>
+<div class="card"><b>What Aura may do on this computer</b>
 <form id="f">${Object.entries(p).map(([k, v]) => `<label><input type="checkbox" name="${k}" ${v.on ? 'checked' : ''}><span><b>${esc(v.label)}</b><br><span class="dim">${esc(v.detail)}</span></span></label>`).join('')}</form>
 <div id="saved" class="dim"></div></div>
 <div class="card"><b>Browser extension</b> — ${Date.now() - bridgeSeen < 90000 ? '<span class="ok">connected</span>' : 'not connected'}${inbox ? ` <span class="dim">(last update ${esc(new Date(inbox.receivedAt).toLocaleTimeString())})</span>` : ''}
@@ -206,11 +246,12 @@ const local = http.createServer(async (req, res) => {
       if (!/^(chrome|moz|edge)-extension:\/\/[a-z0-9-]+$/i.test(origin)) return json(res, 403, { error: 'extensions only' });
       if (!allowed('browser_read') && !allowed('browser_act')) return json(res, 403, { error: 'browser access is switched off on this computer' });
       bridgeExtension = origin;
+      try { const b = await body(req); if (/^[A-Za-z ]{3,30}$/.test(b.browser || '')) { browserApp = b.browser; writeJson('browser.json', { app: browserApp }); } } catch {}
       audit({ event: 'bridge.hello', extension: origin });
       return json(res, 200, { token: bridgeToken });
     }
     if (isBridge) {
-      const given = String(req.headers['x-relay-bridge'] || '');
+      const given = String(req.headers['x-aura-bridge'] || '');
       if (given.length !== bridgeToken.length || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(bridgeToken))) return json(res, 401, { error: 'bad bridge token' });
       if (url.pathname === '/bridge/ingest' && req.method === 'POST') {
         const b = await body(req);

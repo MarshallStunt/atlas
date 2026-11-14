@@ -21,7 +21,7 @@ export const POLICY_DEFAULTS = {
 export const TOOL_POLICY = {
   get_overview: 'status', view_screen: 'screen', open_on_computer: 'open', draft_email: 'open',
   notify_computer: 'notify', lock_computer: 'notify', run_command: 'shell',
-  browser_tabs: 'browser_read', browser_read: 'browser_read', browser_act: 'browser_act', slack_send: 'browser_act',
+  browser_tabs: 'browser_read', browser_read: 'browser_read', reconnect: 'browser_read', browser_act: 'browser_act', slack_send: 'browser_act',
 };
 
 const run = (cmd, args, { timeout = 6000 } = {}) => new Promise(resolve => {
@@ -147,13 +147,13 @@ async function openUrl(u) {
 async function notify(message) {
   const text = String(message).replace(/[\r\n]+/g, ' ').slice(0, 240);
   let r;
-  if (MAC) r = await run('osascript', ['-e', 'on run argv', '-e', 'display notification (item 1 of argv) with title "Relay"', '-e', 'end run', text]);
+  if (MAC) r = await run('osascript', ['-e', 'on run argv', '-e', 'display notification (item 1 of argv) with title "Aura"', '-e', 'end run', text]);
   else if (WIN) {
     // The text goes in through an environment variable, never into the script source.
     r = await new Promise(resolve => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-      'Add-Type -AssemblyName System.Windows.Forms; $n=New-Object System.Windows.Forms.NotifyIcon; $n.Icon=[System.Drawing.SystemIcons]::Information; $n.Visible=$true; $n.ShowBalloonTip(8000,"Relay",$env:RELAY_MSG,"Info"); Start-Sleep 9; $n.Dispose()'],
-      { env: { ...process.env, RELAY_MSG: text }, timeout: 15000, windowsHide: true }, err => resolve({ ok: !err, stderr: String(err?.message || '') })));
-  } else r = await run('notify-send', ['Relay', text]);
+      'Add-Type -AssemblyName System.Windows.Forms; $n=New-Object System.Windows.Forms.NotifyIcon; $n.Icon=[System.Drawing.SystemIcons]::Information; $n.Visible=$true; $n.ShowBalloonTip(8000,"Aura",$env:AURA_MSG,"Info"); Start-Sleep 9; $n.Dispose()'],
+      { env: { ...process.env, AURA_MSG: text }, timeout: 15000, windowsHide: true }, err => resolve({ ok: !err, stderr: String(err?.message || '') })));
+  } else r = await run('notify-send', ['Aura', text]);
   if (!r.ok) throw new Error('Notification failed. ' + (r.missing ? 'Install notify-send.' : r.stderr.slice(0, 200)));
   return { ok: true };
 }
@@ -168,7 +168,7 @@ async function lock() {
 }
 
 async function screenshot() {
-  const raw = path.join(os.tmpdir(), `relay-shot-${process.pid}-${Date.now()}.${WIN || LINUX ? 'png' : 'jpg'}`);
+  const raw = path.join(os.tmpdir(), `aura-shot-${process.pid}-${Date.now()}.${WIN || LINUX ? 'png' : 'jpg'}`);
   const out = raw.replace(/\.png$/, '.jpg');
   const fail = hint => { throw new Error('Screenshot failed. ' + hint); };
   try {
@@ -188,7 +188,7 @@ $s=[Math]::Min(1, 1400/[Math]::Max($b.Width,$b.Height)); $w=[int]($b.Width*$s); 
 $small=New-Object System.Drawing.Bitmap $bmp,$w,$h
 $enc=[System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()|?{$_.MimeType -eq 'image/jpeg'}
 $p=New-Object System.Drawing.Imaging.EncoderParameters 1; $p.Param[0]=New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality),[long]70
-$small.Save($env:RELAY_OUT,$enc,$p)`], { env: { ...process.env, RELAY_OUT: out }, timeout: 20000, windowsHide: true }, err => resolve({ ok: !err })));
+$small.Save($env:AURA_OUT,$enc,$p)`], { env: { ...process.env, AURA_OUT: out }, timeout: 20000, windowsHide: true }, err => resolve({ ok: !err })));
       if (!r.ok || !fs.existsSync(out)) fail('PowerShell could not capture the screen (it must run in your desktop session, not as a service).');
       return shotResult(out);
     }

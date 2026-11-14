@@ -1,16 +1,21 @@
-// Relay hub: serves the phone UI, signs you in, keeps the device registry, holds the live link
+// Aura hub: serves the phone UI, signs you in, keeps the device registry, holds the live link
 // to each computer's agent, runs the assistant, and writes the audit log.
 import http from 'node:http';
+import https from 'node:https';
+import { certificate } from './lan.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as auth from './auth.js';
 import * as devices from './devices.js';
 import * as brain from './brain.js';
+import * as voice from './voice.js';
+import { connections } from './connections.js';
+import { testAI } from './testai.js';
 import { audit, recentAudit, DATA } from './store.js';
 
-const PORT = Number(process.env.RELAY_PORT || 8100);
-const HOST = process.env.RELAY_HOST || '127.0.0.1'; // reach it from the phone through Tailscale Serve, not by opening the port
+const PORT = Number(process.env.AURA_PORT || 8100);
+const HOST = process.env.AURA_HOST || '127.0.0.1'; // reach it from the phone through Tailscale Serve, not by opening the port
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.json': 'application/json' };
 
@@ -18,7 +23,7 @@ const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
   'X-Frame-Options': 'DENY',
-  'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
+  'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
 };
 
 function send(res, status, body, headers = {}) {
@@ -32,6 +37,15 @@ function readBody(req, limit = 64 * 1024) {
     let size = 0; const chunks = [];
     req.on('data', c => { size += c.length; if (size > limit) { reject(new Error('body too large')); req.destroy(); } else chunks.push(c); });
     req.on('end', () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks)) : {}); } catch { reject(new Error('bad JSON')); } });
+    req.on('error', reject);
+  });
+}
+
+function readRaw(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', c => { size += c.length; if (size > limit) { reject(new Error('recording too long')); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
@@ -55,7 +69,7 @@ function sameOrigin(req) {
     const o = new URL(origin);
     if (o.host === req.headers.host || o.host === req.headers['x-forwarded-host']) return true;
     // Tailscale Serve may forward with Host set to the local address; accept this machine's own tailnet name.
-    const tsName = process.env.RELAY_TAILNET_HOST;
+    const tsName = process.env.AURA_TAILNET_HOST;
     return !!tsName && o.host === tsName;
   } catch { return false; }
 }
@@ -73,13 +87,14 @@ function state() {
 
 // Direct actions from buttons on the dashboard. The user tapped them, so they count as the user's
 // own intent; the computer still applies its local policy.
-const BUTTON_ACTIONS = new Set(['open_on_computer', 'notify_computer', 'lock_computer', 'view_screen', 'get_overview']);
+const BUTTON_ACTIONS = new Set(['open_on_computer', 'notify_computer', 'lock_computer', 'view_screen', 'get_overview', 'reconnect']);
 
-const server = http.createServer(async (req, res) => {
+async function handler(req, res) {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
   try {
     /* ---- agent endpoints (authenticated by pairing / device signature, not the cookie) ---- */
+    if (p === '/healthz') return send(res, 200, { ok: true });
     if (p === '/agent/pair/request' && req.method === 'POST') return send(res, 200, devices.requestPairing(await readBody(req)));
     if (p === '/agent/pair/poll') return send(res, 200, devices.pollPairing(url.searchParams.get('id')));
 
@@ -89,11 +104,11 @@ const server = http.createServer(async (req, res) => {
     /* ---- sign-in ---- */
     const token = auth.tokenFrom(req);
     const authed = auth.check(token);
-    if (p === '/api/session') return send(res, 200, { authed, needsSetup: !auth.hasPin(), canSetup: !auth.hasPin() && auth.isDirectLocal(req) });
+    if (p === '/api/session') return send(res, 200, { authed, needsSetup: !auth.hasPin(), canSetup: !auth.hasPin() && (auth.SERVER || auth.isDirectLocal(req)), needsSetupCode: auth.SERVER && !auth.hasPin() });
     if (p === '/api/setup' && req.method === 'POST') {
       if (auth.hasPin()) return send(res, 409, { error: 'A PIN is already set.' });
-      if (!auth.isDirectLocal(req)) return send(res, 403, { error: 'Set the PIN from the computer itself (open http://127.0.0.1:' + PORT + ' there).' });
-      const { pin } = await readBody(req);
+      const { pin, setupCode } = await readBody(req);
+      if (!auth.setupAllowed(req, setupCode)) return send(res, 403, { error: auth.SERVER ? 'Wrong setup code. It is printed in the hub\'s log.' : 'Set the PIN from the computer itself (open http://127.0.0.1:' + PORT + ' there).' });
       auth.setPin(pin);
       const t = auth.login(req, pin);
       return send(res, 200, { ok: true }, { 'Set-Cookie': auth.cookieHeader(t, req) });
@@ -130,6 +145,28 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST') return send(res, 200, brain.setNoteDone(m[1], !!(await readBody(req)).done));
     }
 
+    if (p === '/api/test-ai' && req.method === 'POST') {
+      const b = await readBody(req);
+      audit({ who: 'me', event: 'ai.test', provider: b.provider, model: b.model });
+      return send(res, 200, await testAI({ provider: b.provider, model: b.model, parts: Array.isArray(b.parts) ? b.parts : undefined }));
+    }
+    if (p === '/api/connections') return send(res, 200, connections());
+    if (p === '/api/brief') return send(res, 200, await brain.brief({ tz: url.searchParams.get('tz') || undefined, force: url.searchParams.get('force') === '1' }));
+    if (p === '/api/stt' && req.method === 'POST') {
+      const audio = await readRaw(req, 15 * 1024 * 1024);
+      if (audio.length < 1000) return send(res, 200, { text: '' });
+      return send(res, 200, { text: await voice.transcribe(audio, String(req.headers['content-type'] || 'audio/webm')) });
+    }
+    if (p === '/api/tts' && req.method === 'POST') {
+      const { text } = await readBody(req);
+      try {
+        const { audio, type } = await voice.synthesize(text);
+        return send(res, 200, audio, { 'Content-Type': type });
+      } catch (e) {
+        // 204 tells the phone to use its own voice instead.
+        return send(res, e.message === 'browser' ? 204 : 502, e.message === 'browser' ? '' : { error: friendly(e) });
+      }
+    }
     if (p === '/api/models') return send(res, 200, await brain.listModels(url.searchParams.get('provider')));
     if (p === '/api/settings' && req.method === 'POST') {
       const body = await readBody(req);
@@ -160,7 +197,7 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     return send(res, 400, { error: friendly(e) });
   }
-});
+}
 
 function friendly(e) {
   const msg = String(e?.message || e);
@@ -168,8 +205,23 @@ function friendly(e) {
   return msg.slice(0, 400);
 }
 
+const server = http.createServer(handler);
 devices.attach(server);
 server.listen(PORT, HOST, () => {
-  console.log(`Relay hub on http://${HOST}:${PORT}  (data in ${DATA})`);
-  if (!auth.hasPin()) console.log(`First run: open http://127.0.0.1:${PORT} on this computer to set your PIN.`);
+  console.log(`Aura hub on http://${HOST}:${PORT}  (data in ${DATA})`);
+  if (!auth.hasPin()) console.log(auth.SERVER ? `First run: open Aura and set your PIN with setup code ${auth.setupCode}` : `First run: open http://127.0.0.1:${PORT} on this computer to set your PIN.`);
 });
+
+// Local network access (AURA_LAN=1): HTTPS on all interfaces so a phone on the same Wi-Fi can
+// open it. Sign-in still needs the PIN, and the first PIN can still only be set at this computer.
+if (process.env.AURA_LAN === '1') {
+  const LAN_PORT = Number(process.env.AURA_LAN_PORT || 8443);
+  try {
+    const tls = certificate();
+    const lan = https.createServer({ key: tls.key, cert: tls.cert }, handler);
+    devices.attach(lan);
+    lan.listen(LAN_PORT, '0.0.0.0', () => {
+      console.log(`Aura on your network: ${[...tls.names.filter(n => n !== 'localhost'), ...tls.ips.filter(i => i !== '127.0.0.1')].map(h => `https://${h}:${LAN_PORT}`).join('  ')}`);
+    });
+  } catch (e) { console.error('Could not start local network access:', e.message); }
+}

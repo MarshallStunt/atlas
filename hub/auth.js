@@ -12,9 +12,21 @@ const persist = () => save('auth.json', auth);
 
 export const hasPin = () => !!auth.pin;
 
+// Server mode (AURA_SERVER=1): the hub runs on company infrastructure behind a TLS proxy, so nobody
+// is "at the computer". The first PIN then needs a one-time setup code printed in the hub's log.
+export const SERVER = process.env.AURA_SERVER === '1';
+const TRUST_PROXY = SERVER || process.env.AURA_TRUST_PROXY === '1';
+export const setupCode = SERVER && !auth.pin ? crypto.randomBytes(5).toString('hex').toUpperCase() : null;
+export function setupAllowed(req, code) {
+  if (auth.pin) return false;
+  if (SERVER) return !!code && crypto.timingSafeEqual(Buffer.from(String(code).toUpperCase().padEnd(10).slice(0, 10)), Buffer.from(setupCode));
+  return isDirectLocal(req);
+}
+
 // Only someone sitting at the computer may set the first PIN: the request must come straight to
 // loopback with no proxy headers (Tailscale Serve and other proxies add forwarding headers).
 export function isDirectLocal(req) {
+  if (SERVER) return false;
   const ip = req.socket.remoteAddress || '';
   const loop = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
   const proxied = Object.keys(req.headers).some(h => h.startsWith('x-forwarded') || h.startsWith('tailscale-') || h === 'forwarded' || h === 'via');
@@ -30,8 +42,13 @@ export function setPin(pin) {
   audit({ event: 'auth.pin_set' });
 }
 
+// Only trust X-Forwarded-For from a local proxy (Tailscale Serve); a phone on the network could fake it
+// to dodge the wrong-PIN lockout.
 function clientIp(req) {
-  return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  const ip = req.socket.remoteAddress || '';
+  const viaLocalProxy = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+  // Behind the company proxy the first X-Forwarded-For entry is the phone's address.
+  return String((TRUST_PROXY || viaLocalProxy) && req.headers['x-forwarded-for'] || ip).split(',')[0].trim();
 }
 
 export function login(req, pin) {
@@ -70,10 +87,10 @@ export function check(token) {
 
 export function cookieHeader(token, req, maxAgeDays = SESSION_DAYS) {
   const secure = req.headers['x-forwarded-proto'] === 'https' || req.socket.encrypted ? '; Secure' : '';
-  return `relay_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeDays * 86400}${secure}`;
+  return `aura_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeDays * 86400}${secure}`;
 }
 
 export function tokenFrom(req) {
-  const m = String(req.headers.cookie || '').match(/(?:^|;\s*)relay_session=([^;]+)/);
+  const m = String(req.headers.cookie || '').match(/(?:^|;\s*)aura_session=([^;]+)/);
   return m ? m[1] : null;
 }

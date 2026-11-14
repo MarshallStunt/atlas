@@ -96,7 +96,7 @@ export function callDevice(deviceId, tool, input = {}) {
   const d = registry.devices.find(x => x.id === deviceId && x.owner === OWNER);
   if (!d) return Promise.reject(new Error('No computer is paired yet.'));
   const link = live.get(deviceId);
-  if (!link) return Promise.reject(new Error(`${d.name} is offline (the Relay agent isn't connected).`));
+  if (!link) return Promise.reject(new Error(`${d.name} is offline (the Aura agent isn't connected).`));
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { calls.delete(id); reject(new Error(`${d.name} didn't answer in time.`)); }, CALL_TIMEOUT);
@@ -128,7 +128,7 @@ function handshake(ws, deviceId) {
     if (!authed) {
       if (msg.type !== 'auth') return ws.close(4002, 'auth first');
       let ok = false;
-      try { ok = crypto.verify(null, Buffer.from(`relay:${deviceId}:${nonce}`), crypto.createPublicKey(device.publicKey), Buffer.from(String(msg.sig), 'base64')); } catch {}
+      try { ok = crypto.verify(null, Buffer.from(`aura:${deviceId}:${nonce}`), crypto.createPublicKey(device.publicKey), Buffer.from(String(msg.sig), 'base64')); } catch {}
       if (!ok) { audit({ event: 'device.auth_failed', device: deviceId }); return ws.close(4003, 'bad signature'); }
       authed = true; clearTimeout(giveUp);
       live.get(deviceId)?.ws.close(4004, 'replaced by a newer connection');

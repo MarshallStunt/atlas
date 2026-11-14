@@ -1,6 +1,6 @@
 {
-  "name": "Relay",
-  "short_name": "Relay",
+  "name": "Aura",
+  "short_name": "Aura",
   "description": "Your work computer, from your phone",
   "start_url": "/",
   "display": "standalone",

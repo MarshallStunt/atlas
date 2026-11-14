@@ -1,5 +1,5 @@
-// Relay Bridge: every minute, read Gmail (unread), Google Calendar (agenda) and Slack (mentions)
-// using this Chrome's own sign-in, and hand the result to the Relay agent on this computer.
+// Aura Bridge: every minute, read Gmail (unread), Google Calendar (agenda) and Slack (mentions)
+// using this Chrome's own sign-in, and hand the result to the Aura agent on this computer.
 // It also waits for jobs from the agent (sending a Slack message the user approved on their phone).
 // No passwords or Slack tokens are stored: Slack calls run inside the open Slack tab.
 
@@ -8,10 +8,16 @@ const settings = () => chrome.storage.local.get(['agent', 'token', 'email']).the
 
 // Connect to the agent on this computer without any copy-pasting: the agent hands its token only
 // to a request whose Origin is a browser extension, which web pages can't fake.
+// Which browser this is, so the agent can relaunch the right one if it's closed.
+function browserName() {
+  if (navigator.brave) return 'Brave Browser';
+  const brands = (navigator.userAgentData?.brands || []).map(b => b.brand).join(' ');
+  return /Edge/.test(brands) ? 'Microsoft Edge' : /Opera/.test(brands) ? 'Opera' : 'Google Chrome';
+}
 async function ensureToken() {
   const s = await settings();
   if (s.token) return s;
-  const r = await fetch(s.agent + '/bridge/hello', { method: 'POST' });
+  const r = await fetch(s.agent + '/bridge/hello', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ browser: browserName() }) });
   if (!r.ok) throw new Error(r.status === 403 ? 'browser access is switched off in the agent' : 'agent said ' + r.status);
   const { token } = await r.json();
   await chrome.storage.local.set({ token });
@@ -19,7 +25,7 @@ async function ensureToken() {
 }
 async function toAgent(path, opts = {}) {
   let s = await ensureToken();
-  const go = () => fetch(s.agent + path, { ...opts, headers: { 'Content-Type': 'application/json', 'X-Relay-Bridge': s.token, ...(opts.headers || {}) } });
+  const go = () => fetch(s.agent + path, { ...opts, headers: { 'Content-Type': 'application/json', 'X-Aura-Bridge': s.token, ...(opts.headers || {}) } });
   let r = await go();
   if (r.status === 401) { await chrome.storage.local.remove('token'); s = await ensureToken(); r = await go(); } // agent was reinstalled
   return r;
@@ -32,23 +38,58 @@ async function fetchInPage(u) {
     return { ok: r.ok, status: r.status, url: r.url, text: await r.text() };
   } catch (e) { return { error: String(e.message || e) }; }
 }
-async function fetchSignedIn(url, { name, tabPattern, good }) {
+/* ---------- self-healing app tabs ----------
+   Each app Aura reads (Gmail, Calendar, Slack) needs a signed-in tab. If the user's own tab is gone,
+   Aura keeps its own pinned background tab; if Chrome put the tab to sleep or it crashed, Aura
+   reloads it. Only a real sign-out needs the user, and that is reported as SIGN_IN. */
+const SIGN_IN_PAGE = /accounts\.google\.com|ServiceLogin|\/signin|slack\.com\/(signin|workspace-signin|checkcookie)/i;
+async function appTab(key, pattern, openUrl) {
+  const tabs = await chrome.tabs.query({ url: pattern });
+  let tab = tabs.find(t => t.status === 'complete' && !t.discarded) || tabs[0];
+  let fresh = false;
+  if (!tab) {
+    const stored = (await chrome.storage.local.get('tabs')).tabs || {};
+    tab = stored[key] && await chrome.tabs.get(stored[key]).catch(() => null);
+    if (!tab) {
+      tab = await chrome.tabs.create({ url: openUrl, active: false, pinned: true });
+      await chrome.storage.local.set({ tabs: { ...stored, [key]: tab.id } });
+      fresh = true;
+    }
+  }
+  if (tab.discarded || tab.status === 'unloaded' || tab.frozen) { await chrome.tabs.reload(tab.id); fresh = true; }
+  if (fresh) await waitLoaded(tab.id, 30000);
+  tab = await chrome.tabs.get(tab.id);
+  if (SIGN_IN_PAGE.test(tab.url || '')) throw new Error(`SIGN_IN: you're signed out of ${key}. Sign in once in the pinned ${key} tab.`);
+  return { tab, fresh };
+}
+// Run a function inside the app's tab; if the tab is broken, reload it once and try again.
+async function inAppTab(key, pattern, openUrl, func, args) {
+  let { tab, fresh } = await appTab(key, pattern, openUrl);
+  const run = async () => (await chrome.scripting.executeScript({ target: { tabId: tab.id }, func, args }))[0]?.result;
+  try { return { result: await run(), tab, fresh }; }
+  catch {
+    await chrome.tabs.reload(tab.id); await waitLoaded(tab.id, 30000);
+    tab = await chrome.tabs.get(tab.id);
+    if (SIGN_IN_PAGE.test(tab.url || '')) throw new Error(`SIGN_IN: you're signed out of ${key}. Sign in once in the pinned ${key} tab.`);
+    return { result: await run(), tab, fresh: true };
+  }
+}
+async function fetchSignedIn(url, { name, tabPattern, openUrl, good }) {
   try {
     const r = await fetch(url, { credentials: 'include' });
     const res = { ok: r.ok, status: r.status, url: r.url, text: await r.text() };
     if (good(res)) return res;
   } catch {}
-  const [tab] = await chrome.tabs.query({ url: tabPattern });
-  if (!tab) throw new Error(`not signed in from the extension; open ${name} in a tab`);
-  const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fetchInPage, args: [url] });
+  const { result } = await inAppTab(name, tabPattern, openUrl, fetchInPage, [url]);
   if (result && !result.error && good(result)) return result;
-  throw new Error(`not signed in to ${name}`);
+  if (result && SIGN_IN_PAGE.test(result.url || '')) throw new Error(`SIGN_IN: you're signed out of ${name}. Sign in once in the pinned ${name} tab.`);
+  throw new Error(`couldn't read ${name} (${result?.error || 'HTTP ' + result?.status}); retrying next minute`);
 }
 
 /* ---------- Gmail: unread inbox from the Atom feed ---------- */
 const tag = (x, t) => decode((x.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`)) || [])[1] || '');
 async function gmail() {
-  const x = (await fetchSignedIn('https://mail.google.com/mail/u/0/feed/atom', { name: 'Gmail', tabPattern: 'https://mail.google.com/*', good: r => r.ok && /<feed/.test(r.text) })).text;
+  const x = (await fetchSignedIn('https://mail.google.com/mail/u/0/feed/atom', { name: 'Gmail', tabPattern: 'https://mail.google.com/*', openUrl: 'https://mail.google.com/mail/u/0/', good: r => r.ok && /<feed/.test(r.text) })).text;
   return {
     email: (tag(x, 'title').match(/[\w.+-]+@[\w.-]+/) || [])[0] || '',
     unread: Number((x.match(/<fullcount>(\d+)/) || [])[1]) || 0,
@@ -74,7 +115,7 @@ async function calendar(email) {
   if (!email) throw new Error('needs your email (set it in the bridge options, or let Gmail sync first)');
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const r = await fetchSignedIn(`https://calendar.google.com/calendar/htmlembed?src=${encodeURIComponent(email)}&mode=AGENDA&ctz=${encodeURIComponent(tz)}`, {
-    name: 'Google Calendar', tabPattern: 'https://calendar.google.com/*',
+    name: 'Google Calendar', tabPattern: 'https://calendar.google.com/*', openUrl: 'https://calendar.google.com/calendar/u/0/r',
     good: r => r.ok && !/ServiceLogin|accounts\.google\.com/.test(r.url) && /<body/.test(r.text) });
   const events = [];
   for (const sec of r.text.split('class="date-section').slice(1)) {
@@ -158,11 +199,15 @@ async function slackInPage(job) {
     return { ok: false, error: String(e.message || e) };
   }
 }
+// People often use the Slack desktop app, so there may be no Slack tab: Aura keeps its own pinned one.
 async function slackTabRun(job) {
-  const [tab] = await chrome.tabs.query({ url: 'https://app.slack.com/*' });
-  if (!tab) throw new Error('open Slack (app.slack.com) in a Chrome tab');
-  const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: slackInPage, args: [job || null] });
-  if (!result?.ok) throw new Error(result?.error || 'the Slack tab did not answer; reload it');
+  let { result, fresh } = await inAppTab('Slack', 'https://app.slack.com/*', 'https://app.slack.com/client', slackInPage, [job || null]);
+  // A freshly (re)loaded Slack client needs a few seconds before it has signed in.
+  for (let i = 0; fresh && !result?.ok && /Not signed in/.test(result?.error || '') && i < 6; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    ({ result } = await inAppTab('Slack', 'https://app.slack.com/*', 'https://app.slack.com/client', slackInPage, [job || null]));
+  }
+  if (!result?.ok) throw new Error(/Not signed in/.test(result?.error || '') ? "SIGN_IN: you're signed out of Slack. Sign in once in the pinned Slack tab." : result?.error || 'the Slack tab did not answer; retrying next minute');
   return result;
 }
 
@@ -180,7 +225,7 @@ function sync() {
       const r = await toAgent('/bridge/ingest', { method: 'POST', body: JSON.stringify(out) });
       ok = r.ok;
       if (!ok) out.errors.agent = `agent said ${r.status}`;
-    } catch (e) { out.errors.agent = /fetch/i.test(e.message) ? 'the Relay agent is not running on this computer' : e.message; }
+    } catch (e) { out.errors.agent = /fetch/i.test(e.message) ? 'the Aura agent is not running on this computer' : e.message; }
     const detail = { gmail: out.gmail ? `${out.gmail.unread} unread` : out.errors.gmail, calendar: out.calendar ? `${out.calendar.events.length} events` : out.errors.calendar, slack: out.slack ? `${out.slack.mentions.length} mentions` : out.errors.slack, ...(out.errors.agent ? { agent: out.errors.agent } : {}) };
     await chrome.storage.local.set({ lastRun: { at: Date.now(), ok, detail } });
   })().finally(() => { syncing = null; });
@@ -207,7 +252,7 @@ function snapshotPage(find) {
   const visible = el => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none'; };
   const els = [...document.querySelectorAll('a[href],button,input,textarea,select,[role=button],[role=link],[role=textbox],[contenteditable=true],[role=tab],[role=menuitem],[role=option]')].filter(visible).slice(0, 150);
   const items = els.map((el, i) => {
-    el.setAttribute('data-relay-ref', String(i + 1));
+    el.setAttribute('data-aura-ref', String(i + 1));
     const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.title || el.getAttribute('href') || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     const kind = el.matches('input,textarea,[role=textbox],[contenteditable=true]') ? 'field' : el.tagName === 'A' ? 'link' : 'button';
     return `[${i + 1}] ${kind}: ${label}`;
@@ -221,7 +266,7 @@ function snapshotPage(find) {
   return { title: document.title, url: location.href, text: text.slice(0, 16000), elements: items.join('\n').slice(0, 8000) };
 }
 function actInPage(ref, action, text) {
-  const el = document.querySelector(`[data-relay-ref="${CSS.escape(String(ref))}"]`);
+  const el = document.querySelector(`[data-aura-ref="${CSS.escape(String(ref))}"]`);
   if (!el) return { ok: false, error: `No element [${ref}] — read the page again first.` };
   el.scrollIntoView({ block: 'center' });
   if (action === 'click') { el.click(); return { ok: true }; }
@@ -268,6 +313,7 @@ async function runJob(job) {
   if (job.kind === 'read') return readJob(job.input || {});
   if (job.kind === 'act') return actJob(job.input || {});
   if (job.kind === 'slack_send') return (await slackTabRun(job.input)).result;
+  if (job.kind === 'resync') { await sync(); return (await chrome.storage.local.get('lastRun')).lastRun; }
   throw new Error('unknown job ' + job.kind);
 }
 
