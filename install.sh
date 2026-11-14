@@ -107,7 +107,7 @@ if [ "$(uname)" = Darwin ]; then
   rm -f "$APP/Contents/Resources/Assets.car"   # otherwise macOS shows the default script icon
   /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$APP/Contents/Info.plist" 2>/dev/null || true
   codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true; touch "$APP"
-  ln -sfn "$APP" "$HOME/Desktop/Aura"
+  [ -e "$HOME/Desktop/Aura.app" ] || ln -s "$APP" "$HOME/Desktop/Aura.app"
   echo "✓ Aura icon added to your Desktop and ~/Applications (drag it to the Dock if you like)"
 else
   mkdir -p "$HOME/.local/share/applications"
