@@ -39,7 +39,8 @@ const allowed = key => policy()[key]?.on;
    Gmail never overwrites a work one, and actions go to the browser they belong to. */
 const CORE = { gmail: 'gmail', calendar: 'gcal', slack: 'slack', outlook: 'outlook' }; // inbox key -> app id
 // The extension version shipped with this agent; the extension reloads itself when it's older.
-const BRIDGE_VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'bridge', 'manifest.json'), 'utf8')).version; } catch { return null; } })();
+// Read fresh each time, so a new extension on disk is noticed without restarting Aura.
+const bridgeVersion = () => { try { return JSON.parse(fs.readFileSync(path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'bridge', 'manifest.json'), 'utf8')).version; } catch { return null; } };
 const sp = (id, n) => path.join('spaces', id, n);
 fs.mkdirSync(f('spaces'), { recursive: true, mode: 0o700 });
 
@@ -66,7 +67,7 @@ function appChoices(id = spaces.list[0].id) {
   return { apps: Object.fromEntries(APPS.map(a => [a.id, saved.apps?.[a.id] ?? a.def !== false])), otherSites: saved.otherSites !== false, outlookMailUrl: saved.outlookMailUrl || '', outlookCalUrl: saved.outlookCalUrl || '' };
 }
 // What a space's browser extension needs to know: which apps to sync and which sites it may read.
-const bridgeConfig = id => { const c = appChoices(id); return { space: spaceById(id)?.name, hubUrl, bridgeVersion: BRIDGE_VERSION, apps: c.apps, otherSites: c.otherSites, outlook: { mail: c.outlookMailUrl, calendar: c.outlookCalUrl }, matchers: Object.fromEntries(APPS.map(a => [a.id, matcherFor(a, c)])) }; };
+const bridgeConfig = id => { const c = appChoices(id); return { space: spaceById(id)?.name, hubUrl, bridgeVersion: bridgeVersion(), apps: c.apps, otherSites: c.otherSites, outlook: { mail: c.outlookMailUrl, calendar: c.outlookCalUrl }, matchers: Object.fromEntries(APPS.map(a => [a.id, matcherFor(a, c)])) }; };
 function answerPoll(id, jobs = []) {
   const r = R(id); if (!r.poller) return false;
   const { res, timer } = r.poller; r.poller = null; clearTimeout(timer);
@@ -129,7 +130,7 @@ function spaceSummary(s) {
     id: s.id, name: s.name, private: !!s.private, browser: s.browser, connected: connectedNow(s),
     inbox: overviewSpace(s.id),
     apps: { otherSites: ch.otherSites, outlookMailUrl: ch.outlookMailUrl, outlookCalUrl: ch.outlookCalUrl, list: APPS.map(a => ({ id: a.id, name: a.name, kind: a.kind, synced: !!a.synced, on: ch.apps[a.id] })) },
-    bridge: { lastSync: r.inbox?.receivedAt || null, lastPoll: r.seen || null, extension: s.origin || null, version: r.inbox?.version || null, expected: BRIDGE_VERSION, folder: extFolder },
+    bridge: { lastSync: r.inbox?.receivedAt || null, lastPoll: r.seen || null, extension: s.origin || null, version: r.inbox?.version || null, expected: bridgeVersion(), folder: extFolder },
   };
 }
 

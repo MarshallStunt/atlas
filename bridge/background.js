@@ -109,59 +109,54 @@ async function gmail() {
 }
 
 /* ---------- Google Calendar: agenda view of the user's own calendar ---------- */
-function parseWhen(dateText, timeText) {
-  const day = new Date(dateText.replace(/^\w+\s+/, ''));
-  if (isNaN(day)) return { at: null, allDay: true };
-  const m = String(timeText || '').trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
-  if (!m) return { at: day.getTime(), allDay: true };
-  let h = Number(m[1]) % 12; if (/pm/i.test(m[3])) h += 12;
-  day.setHours(h, Number(m[2] || 0), 0, 0);
-  return { at: day.getTime(), allDay: false };
-}
-// The calendar feed needs the account's address: from Gmail when it's on, otherwise read once from
-// Google Calendar itself (where this browser is already signed in) and remembered.
-async function calendarAddress(fromGmail) {
-  if (fromGmail) { chrome.storage.local.set({ calendarEmail: fromGmail }); return fromGmail; }
-  const { calendarEmail } = await chrome.storage.local.get('calendarEmail');
-  if (calendarEmail) return calendarEmail;
-  const r = await fetchSignedIn('https://calendar.google.com/calendar/u/0/r', { name: 'Google Calendar', tabPattern: 'https://calendar.google.com/*', openUrl: 'https://calendar.google.com/calendar/u/0/r',
-    good: r => r.ok && !SIGN_IN_PAGE.test(r.url) && /@/.test(r.text) });
-  const email = (r.text.match(/["'\s]([\w.+-]+@(?!google\.com|gmail-smtp)[\w-]+(?:\.[\w-]+)+)["'\s]/) || [])[1];
-  if (!email) throw new Error("couldn't tell which Google account this calendar belongs to; retrying next minute");
-  chrome.storage.local.set({ calendarEmail: email });
-  return email;
+/* ---------- Google Calendar: read from Aura's own pinned Calendar tab ----------
+   Google's old agenda feed now answers automated checks with an "unusual traffic" page, so Aura
+   reads the normal Calendar page (schedule view) instead. That page keeps itself up to date, so
+   reading it every minute sends Google no extra requests; the tab is refreshed every 30 minutes. */
+const GOOGLE_SORRY = /google\.[a-z.]+\/sorry/i;
+// Runs inside the Calendar tab: each event button has a screen-reader label like
+// "9:30am to 10am, Title, Name, Accepted, Location, November 16, 2026" or "All day, Title, …, November 13 – 16, 2026".
+async function readGoogleCalendar() {
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  let els = [];
+  for (let i = 0; i < 30; i++) { els = [...document.querySelectorAll('[data-eventid][role="button"][aria-label]')]; if (els.length || (i > 12 && document.querySelector('[role="main"]'))) break; await wait(500); }
+  const DATE = /,\s*([A-Z][a-z]+ \d{1,2}(?:\s*[–-]\s*(?:[A-Z][a-z]+ )?\d{1,2})?,\s*\d{4})\s*$/;
+  const out = [], seen = new Set();
+  for (const el of els) {
+    const label = el.getAttribute('aria-label') || '';
+    if (/^working location/i.test(label)) continue;
+    const dm = label.match(DATE); if (!dm) continue;
+    const parts = label.slice(0, dm.index).split(/,\s*/);
+    const allDay = /^all day$/i.test(parts[0]);
+    const tm = !allDay && parts[0].match(/^(\d{1,2}(?::\d{2})?\s?[ap]m)\s+to\s+(\d{1,2}(?::\d{2})?\s?[ap]m)$/i);
+    if (!allDay && !tm) continue;
+    const title = parts[1] || '(no title)';
+    const firstDay = dm[1].replace(/\s*[–-]\s*(?:[A-Z][a-z]+ )?\d{1,2}(?=,)/, ''); // "November 13 – 16, 2026" -> "November 13, 2026"
+    const key = title + firstDay + (tm ? tm[1] : 'all');
+    if (seen.has(key)) continue; seen.add(key);
+    out.push({ title, date: dm[1], day: firstDay, time: tm ? tm[1] : '', end: tm ? tm[2] : '', allDay, status: parts.find(p => /^(Accepted|Declined|Tentative|Needs RSVP|Organizer)$/i.test(p)) || '' });
+  }
+  return { ok: true, events: out };
 }
 async function calendar(email) {
-  email = await calendarAddress(email);
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const url = `https://calendar.google.com/calendar/htmlembed?src=${encodeURIComponent(email)}&mode=AGENDA&ctz=${encodeURIComponent(tz)}`;
-  // Only a real agenda counts (signed out, Google answers with a marketing page instead).
-  const isAgenda = t => /class="(date-section|no-events-container|no-events)|<tr class="event"/.test(t);
-  let html = null;
-  try { const r = await fetch(url, { credentials: 'include' }); const t = await r.text(); if (r.ok && isAgenda(t)) html = t; } catch {}
-  if (!html) {
-    // Load the agenda page itself in Aura's small pinned tab, exactly like opening it by hand, and read it there.
-    const tab = await ownTab('Google Calendar agenda', url);
-    if (SIGN_IN_PAGE.test(tab.url || '')) throw new Error(`SIGN_IN: you're signed out of Google Calendar (${email}). Sign in once in the pinned Calendar tab.`);
-    await chrome.tabs.reload(tab.id); await waitLoaded(tab.id, 30000); // fresh agenda every sync
-    const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => ({ url: location.href, html: document.documentElement.outerHTML }) });
-    if (SIGN_IN_PAGE.test(result?.url || '')) throw new Error(`SIGN_IN: you're signed out of Google Calendar (${email}). Sign in once in the pinned Calendar tab.`);
-    if (!isAgenda(result?.html || '')) throw new Error(`Google Calendar didn't show the agenda for ${email}; is this browser signed in to that account? Retrying next minute`);
-    html = result.html;
+  const { calendarPausedUntil = 0 } = await chrome.storage.local.get('calendarPausedUntil');
+  if (Date.now() < calendarPausedUntil) throw new Error(`paused after Google's "unusual traffic" check; back at ${new Date(calendarPausedUntil).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+  const url = 'https://calendar.google.com/calendar/u/0/r/agenda' + (email ? `?authuser=${encodeURIComponent(email)}` : '');
+  const tab = await ownTab('Google Calendar', url);
+  if (GOOGLE_SORRY.test(tab.url || '')) {
+    await chrome.storage.local.set({ calendarPausedUntil: Date.now() + 30 * 60 * 1000 }); // back off; never try to get past the check
+    throw new Error('Google asked to confirm this is a person, so Aura paused calendar checks for 30 minutes');
   }
-  const r = { text: html };
-  const events = [];
-  for (const sec of r.text.split('class="date-section').slice(1)) {
-    const date = decode((sec.match(/<div class="date">([^<]+)</) || [])[1] || '');
-    for (const row of sec.match(/<tr class="event">[\s\S]*?<\/tr>/g) || []) {
-      const time = decode((row.match(/class="event-time">([^<]*)</) || [])[1] || '');
-      const title = decode(((row.match(/<span class="event-summary">([\s\S]*?)<\/span>/) || [])[1] || '').replace(/<[^>]+>/g, '')).trim();
-      let link = decode((row.match(/<a[^>]*href="([^"]+)"/) || [])[1] || '');
-      if (link && !/^https?:/.test(link)) link = 'https://calendar.google.com' + (link.startsWith('/') ? '' : '/calendar/') + link;
-      events.push({ date, time, title, link: link || 'https://calendar.google.com/', ...parseWhen(date, time) });
-    }
-  }
-  return { email, timeZone: tz, events: events.slice(0, 60) };
+  if (SIGN_IN_PAGE.test(tab.url || '')) throw new Error(`SIGN_IN: you're signed out of Google Calendar${email ? ` (${email})` : ''}. Sign in once in the pinned Calendar tab.`);
+  const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readGoogleCalendar });
+  if (!result?.ok) throw new Error("couldn't read Google Calendar; retrying next minute");
+  const events = result.events.map(e => {
+    const at = e.allDay ? Date.parse(e.day) : Date.parse(`${e.day} ${e.time.replace(/^(\d{1,2})\s?(am|pm)$/i, '$1:00$2').replace(/(am|pm)$/i, ' $1')}`); // "12pm" -> "12:00 pm"
+    const d = isNaN(at) ? null : new Date(at);
+    return { title: e.title, date: e.date, time: e.allDay ? '' : e.time, end: e.end, allDay: e.allDay, status: e.status, at: isNaN(at) ? null : at,
+      link: d ? `https://calendar.google.com/calendar/u/0/r/day/${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}${email ? `?authuser=${encodeURIComponent(email)}` : ''}` : url };
+  }).sort((a, b) => (a.at || 0) - (b.at || 0));
+  return { email: email || '', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, events: events.slice(0, 60) };
 }
 
 /* ---------- Slack: runs inside the open Slack tab with that tab's own session ---------- */
@@ -420,7 +415,7 @@ function sync() {
 // Only Aura's own tabs (remembered by ID) are closed; tabs you opened yourself are never touched.
 async function closeTurnedOffTabs(apps) {
   const { tabs = {}, ownTabs = {} } = await chrome.storage.local.get(['tabs', 'ownTabs']);
-  const plan = [['gmail', tabs, 'Gmail'], ['gcal', tabs, 'Google Calendar'], ['gcal', ownTabs, 'Google Calendar agenda'], ['slack', tabs, 'Slack'], ['outlook', ownTabs, 'Outlook mail'], ['outlook', ownTabs, 'Outlook calendar']];
+  const plan = [['gmail', tabs, 'Gmail'], ['gcal', tabs, 'Google Calendar'], ['gcal', ownTabs, 'Google Calendar'], ['slack', tabs, 'Slack'], ['outlook', ownTabs, 'Outlook mail'], ['outlook', ownTabs, 'Outlook calendar']];
   let changed = false;
   for (const [id, map, key] of plan) {
     if (apps[id] !== false || !map[key]) continue;
@@ -586,3 +581,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
 });
 // Show the last known state on the icon as soon as the browser starts.
 chrome.storage.local.get('lastRun').then(r => r.lastRun && updateBadge(r.lastRun.ok, r.lastRun.apps));
+
+// Clean up from older versions: the old agenda-feed tab (which Google flagged) and the saved address.
+chrome.storage.local.get('ownTabs').then(async ({ ownTabs = {} }) => {
+  if (ownTabs['Google Calendar agenda']) { await chrome.tabs.remove(ownTabs['Google Calendar agenda']).catch(() => {}); delete ownTabs['Google Calendar agenda']; delete ownTabs['Google Calendar agenda:loaded']; await chrome.storage.local.set({ ownTabs }); }
+  chrome.storage.local.remove('calendarEmail');
+});
