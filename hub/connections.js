@@ -25,7 +25,7 @@ const WEB_APPS = [
   ['NetSuite', /netsuite\.com/, null],
 ];
 
-export function connections() {
+export function connections(net = {}) {
   const s = getSettings();
   const dev = devices.listDevices().find(d => d.selected);
   const snap = dev ? devices.snapshotOf(dev.id) : null;
@@ -91,7 +91,10 @@ export function connections() {
   add('AI', 'Voice (listening)', se === 'browser' ? 'warn' : 'ok', se === 'openai' ? 'OpenAI transcription' : 'Browser speech recognition (cuts off easily; doesn\'t work in Brave).', se === 'browser' ? goto('Add an OpenAI key', 'voice') : null);
 
   // ---- reach ----
-  add('Access', 'Phone access', SERVER ? 'ok' : 'warn', SERVER ? 'Hub is hosted; open it from any signed-in device.' : 'Only reachable on this computer (127.0.0.1). The work firewall blocks phones.', SERVER ? null : { type: 'text', how: 'Ask IT / Cloud Services to host the hub (see DEPLOY.md in the Aura folder), then run the installer with --hub=<that address>.' });
+  if (SERVER) add('Access', 'Other devices', 'ok', 'Hub is hosted; open it from any signed-in device.');
+  else if (net.on) add('Access', 'Other devices', 'ok', `Open ${net.urls?.[0] || 'this computer\'s address'} on a phone or tablet on the same Wi-Fi.`);
+  else if (net.error) add('Access', 'Other devices', 'error', net.error, goto('Open settings', 'network'));
+  else add('Access', 'Other devices', 'off', 'Only this computer can open Aura.', goto('Turn on', 'network'));
 
   const counts = out.reduce((c, x) => (c[x.status] = (c[x.status] || 0) + 1, c), {});
   return { items: out, counts, checkedAt: Date.now() };

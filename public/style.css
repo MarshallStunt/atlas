@@ -267,3 +267,7 @@ a { color: inherit; text-decoration: none; }
 .sent { margin-top: 12px; }
 .sent summary { font-size: 11px; color: var(--dim); letter-spacing: .08em; cursor: pointer; }
 .sent pre { white-space: pre-wrap; word-break: break-all; background: rgba(0,0,0,.35); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font: 12px/1.5 var(--mono); color: var(--dim); }
+.url-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 6px 0; }
+.url-row code { font: 13px var(--mono); word-break: break-all; }
+.url-row code.big-url { font-size: 17px; color: var(--cyan); }
+.chip.toggle:disabled { opacity: .5; }

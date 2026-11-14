@@ -16,7 +16,7 @@ export const getSettings = () => ({ ...DEFAULTS, ...load('settings.json', {}) })
 export function setSettings(patch) {
   const s = load('settings.json', {});
   if (patch.provider && !providers.PROVIDERS[patch.provider]) throw new Error('Unknown provider');
-  for (const k of ['provider', 'model', 'effort', 'voiceReplies', 'voiceEngine', 'voice', 'handsFree']) if (k in patch) s[k] = patch[k];
+  for (const k of ['provider', 'model', 'effort', 'voiceReplies', 'voiceEngine', 'voice', 'handsFree', 'lan']) if (k in patch) s[k] = patch[k];
   // Keys are write-only: an empty string removes one, anything else replaces it.
   if (patch.keys) { s.keys ||= {}; for (const [p, v] of Object.entries(patch.keys)) if (providers.PROVIDERS[p] || p === 'elevenlabs') v ? (s.keys[p] = String(v).trim()) : delete s.keys[p]; }
   if (patch.baseUrls) { s.baseUrls ||= {}; for (const [p, v] of Object.entries(patch.baseUrls)) if (providers.PROVIDERS[p]) v ? (s.baseUrls[p] = String(v).trim()) : delete s.baseUrls[p]; }

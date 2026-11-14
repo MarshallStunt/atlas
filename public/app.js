@@ -215,11 +215,12 @@ function startListening() {
   unlockAudio();
   speaker.stop();
   if (listening) { stopListening?.(); return; }
+  if (!window.isSecureContext) { $('#ask-input').focus(); toast('Talking needs a secure (https) page, so on this device type below instead. Replies are still spoken.'); return; }
   const useServer = state?.settings?.stt === 'openai' && audioCtx && navigator.mediaDevices?.getUserMedia && window.MediaRecorder;
   if (useServer) return recordAndTranscribe();
   if (SR) return browserRecognition();
   $('#ask-input').focus();
-  toast(!window.isSecureContext ? 'Voice needs HTTPS — open Aura through your Tailscale address.'
+  toast(!window.isSecureContext ? 'Talking needs a secure (https) page, so on this device type below instead. Replies are still spoken.'
     : 'This browser has no speech recognition. Add an OpenAI key in System → Voice and voice works everywhere.');
 }
 
@@ -588,6 +589,8 @@ function renderSystem() {
   $('#view-system').innerHTML = `
     <div class="panel edge" id="connections"><div class="panel-head"><span class="label">Connections</span><button class="icon-btn" id="conn-refresh" aria-label="Check again">${I.refresh}</button></div><div class="shimmer"></div><div class="shimmer" style="width:70%"></div></div>
 
+    <div class="panel" id="sec-network">${networkPanel()}</div>
+
     <div class="panel" id="sec-test"><div class="panel-head"><span class="label">AI check</span><button class="btn glow sm" id="test-ai">${icon('spark', 13)} Test AI</button></div>
       <p class="dim" style="font-size:13px;margin:0">Sends a tiny real request to the assistant, the voice and the listening service, and shows speed and exactly what was sent.</p>
       <div id="test-results"></div></div>
@@ -629,6 +632,27 @@ async function reconnectAll(btn) {
   catch (e) { toast(e.message); }
   setTimeout(async () => { try { await api('/api/action', { method: 'POST', body: { tool: 'get_overview' } }); } catch {} loadConnections(); btn.disabled = false; btn.textContent = label; }, 2500);
 }
+
+/* ---------- Other devices (local network) ---------- */
+function networkPanel() {
+  const n = state.network || {};
+  const toggle = `<button class="chip toggle" id="net-toggle" aria-pressed="${!!n.on}" ${n.canChange ? '' : 'disabled'}><span class="led"></span>${n.on ? 'On' : 'Off'}</button>`;
+  return `<div class="panel-head"><span class="label">Other devices</span>${toggle}</div>
+    ${n.on ? `<p style="margin:0 0 8px">On a phone, tablet or laptop on the <b>same Wi-Fi</b>, open:</p>
+      ${(n.urls || []).map((u, i) => `<div class="url-row"><code class="${i ? 'dim' : 'big-url'}">${esc(u)}</code><button class="btn sm" data-copy="${esc(u)}">Copy</button></div>`).join('')}
+      <p class="dim" style="font-size:13px">Sign in with your PIN. Over plain http, browsers block the microphone, so on other devices you type to Aura. Its replies are still spoken.</p>`
+    : `<p class="dim" style="font-size:13px;margin:0">${n.error ? `<span class="error">${esc(n.error)}</span><br>` : ''}Let phones and other computers on your Wi-Fi open Aura. They still need your PIN.${n.canChange ? '' : '<br><b>Turn this on from the computer that runs Aura.</b>'}</p>`}`;
+}
+$('#view-system').addEventListener('click', async e => {
+  const c = e.target.closest('[data-copy]');
+  if (c) { try { await navigator.clipboard.writeText(c.dataset.copy); toast('Copied'); } catch { toast(c.dataset.copy); } return; }
+  const t = e.target.closest('#net-toggle'); if (!t || t.disabled) return;
+  t.disabled = true;
+  try { state.network = { ...(await api('/api/network', { method: 'POST', body: { on: t.getAttribute('aria-pressed') !== 'true' } })) }; }
+  catch (err) { toast(err.message); }
+  $('#sec-network').innerHTML = networkPanel();
+  loadConnections();
+});
 
 /* ---------- AI check ---------- */
 function renderTest(el, r) {

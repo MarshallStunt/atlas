@@ -1,8 +1,7 @@
 // Aura hub: serves the phone UI, signs you in, keeps the device registry, holds the live link
 // to each computer's agent, runs the assistant, and writes the audit log.
 import http from 'node:http';
-import https from 'node:https';
-import { certificate } from './lan.js';
+import { lanAddresses, localName } from './lan.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -122,7 +121,7 @@ async function handler(req, res) {
     if (p === '/api/logout' && req.method === 'POST') { auth.logout(token); return send(res, 200, { ok: true }, { 'Set-Cookie': auth.cookieHeader('', req, 0) }); }
 
     /* ---- dashboard ---- */
-    if (p === '/api/state') return send(res, 200, state());
+    if (p === '/api/state') return send(res, 200, { ...state(), network: { ...network(), canChange: auth.isDirectLocal(req) } });
     if (p === '/api/audit') return send(res, 200, recentAudit(100));
 
     if (p === '/api/devices/pair' && req.method === 'POST') return send(res, 200, devices.approvePairing((await readBody(req)).code));
@@ -150,7 +149,16 @@ async function handler(req, res) {
       audit({ who: 'me', event: 'ai.test', provider: b.provider, model: b.model });
       return send(res, 200, await testAI({ provider: b.provider, model: b.model, parts: Array.isArray(b.parts) ? b.parts : undefined }));
     }
-    if (p === '/api/connections') return send(res, 200, connections());
+    if (p === '/api/network' && req.method === 'POST') {
+      // Only someone at this computer may open it to the network.
+      if (!auth.isDirectLocal(req)) return send(res, 403, { error: 'Turn this on from the computer itself (open Aura there).' });
+      const { on } = await readBody(req);
+      brain.setSettings({ lan: !!on });
+      audit({ who: 'me', event: on ? 'network.on' : 'network.off' });
+      await setLan(!!on);
+      return send(res, 200, { ...network(), canChange: true });
+    }
+    if (p === '/api/connections') return send(res, 200, connections(network()));
     if (p === '/api/brief') return send(res, 200, await brain.brief({ tz: url.searchParams.get('tz') || undefined, force: url.searchParams.get('force') === '1' }));
     if (p === '/api/stt' && req.method === 'POST') {
       const audio = await readRaw(req, 15 * 1024 * 1024);
@@ -212,16 +220,26 @@ server.listen(PORT, HOST, () => {
   if (!auth.hasPin()) console.log(auth.SERVER ? `First run: open Aura and set your PIN with setup code ${auth.setupCode}` : `First run: open http://127.0.0.1:${PORT} on this computer to set your PIN.`);
 });
 
-// Local network access (AURA_LAN=1): HTTPS on all interfaces so a phone on the same Wi-Fi can
-// open it. Sign-in still needs the PIN, and the first PIN can still only be set at this computer.
-if (process.env.AURA_LAN === '1') {
-  const LAN_PORT = Number(process.env.AURA_LAN_PORT || 8443);
+// ---------- Other devices: Aura on the local network (plain HTTP) ----------
+// Off by default. Turned on from the computer itself (System → Other devices) or with AURA_LAN=1.
+// Sign-in still needs the PIN, and the first PIN can still only be set at this computer.
+const LAN_PORT = Number(process.env.AURA_LAN_PORT || 8080);
+let lan = null, lanInfo = null, lanError = null;
+async function setLan(on) {
+  if (lan) { lan.close(); lan.closeAllConnections?.(); lan = null; lanInfo = null; }
+  lanError = null;
+  if (!on) return;
   try {
-    const tls = certificate();
-    const lan = https.createServer({ key: tls.key, cert: tls.cert }, handler);
-    devices.attach(lan);
-    lan.listen(LAN_PORT, '0.0.0.0', () => {
-      console.log(`Aura on your network: ${[...tls.names.filter(n => n !== 'localhost'), ...tls.ips.filter(i => i !== '127.0.0.1')].map(h => `https://${h}:${LAN_PORT}`).join('  ')}`);
-    });
-  } catch (e) { console.error('Could not start local network access:', e.message); }
+    const srv = http.createServer(handler);
+    devices.attach(srv);
+    await new Promise((resolve, reject) => { srv.once('error', reject); srv.listen(LAN_PORT, '0.0.0.0', resolve); });
+    lan = srv;
+    lanInfo = { port: LAN_PORT, urls: [...lanAddresses().map(i => `http://${i}:${LAN_PORT}`), `http://${localName()}:${LAN_PORT}`] };
+    console.log(`Other devices can open Aura at: ${lanInfo.urls.join('  ')}`);
+  } catch (e) {
+    lanError = e.code === 'EADDRINUSE' ? `Port ${LAN_PORT} is already used by another program.` : e.message;
+    console.error('Could not start network access:', lanError);
+  }
 }
+const network = () => ({ on: !!lan, ...(lanInfo || {}), error: lanError });
+setLan(process.env.AURA_LAN === '1' || !!brain.getSettings().lan);
