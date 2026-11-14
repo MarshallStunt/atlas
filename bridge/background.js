@@ -379,6 +379,8 @@ async function outlook() {
 let syncing = null;
 function sync() {
   syncing ||= (async () => {
+    // Use this space's app choices from the start (after a restart they're still loading from storage).
+    if (!appConfig) appConfig = (await chrome.storage.local.get('appConfig')).appConfig || null;
     const s = await settings();
     const out = { errors: {}, version: chrome.runtime.getManifest().version };
     const grab = async (key, fn) => { try { out[key] = await fn(); } catch (e) { out.errors[key] = String(e.message || e); } };

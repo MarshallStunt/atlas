@@ -13,7 +13,10 @@ async function show() {
   else if (!lastRun.ok) { st.className = 'status bad'; $('statusText').textContent = lastRun.agentError || 'Not connected to Atlas on this computer'; }
   else { st.className = 'status ok'; $('statusText').textContent = 'Connected to Atlas'; }
   $('when').textContent = lastRun ? 'Last sync ' + ago(lastRun.at) : '';
-  $('apps').innerHTML = Object.entries(lastRun?.apps || {}).filter(([, a]) => a.state !== 'off') // turned-off apps aren't shown
+  // Only apps that are on for this space: hide anything turned off, by its current setting too.
+  const appId = { Gmail: 'gmail', 'Google Calendar': 'gcal', Slack: 'slack', Outlook: 'outlook' };
+  const offNow = n => appConfig?.apps?.[appId[n]] === false || (n === 'Outlook' && appConfig?.apps?.outlook !== true);
+  $('apps').innerHTML = Object.entries(lastRun?.apps || {}).filter(([n, a]) => a.state !== 'off' && !offNow(n))
     .map(([n, a]) => `<div class="app ${a.state}"><span class="dot"></span><div><div class="n">${esc(n)}</div><div class="t" title="${esc(a.text)}">${esc(a.text)}</div></div></div>`).join('')
     || '<div class="app"><div class="t">Apps appear here after the first sync.</div></div>';
 }

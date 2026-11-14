@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Atlas Bridge",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Connects this browser to Atlas on your computer: reads the web apps you're signed in to (mail, calendar, chat) and hands them only to the Atlas agent here.",
   "permissions": [
     "storage",
