@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Relay Bridge",
+  "version": "0.1.0",
+  "description": "One install gives Relay read access to the web apps you're signed in to (mail, calendar, chat, anything), handed only to the Relay agent on this computer.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Relay Bridge",
+    "default_popup": "options.html"
+  }
+}

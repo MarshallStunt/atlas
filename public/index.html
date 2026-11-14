@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Relay">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="stylesheet" href="/style.css">
+<title>Relay</title>
+</head>
+<body>
+<div id="app">
+  <section id="login" class="screen" hidden>
+    <div class="login-box">
+      <img src="/icon.svg" alt="" width="64" height="64">
+      <h1>Relay</h1>
+      <p id="login-hint" class="dim">Enter your PIN</p>
+      <form id="login-form">
+        <input id="pin" type="password" inputmode="numeric" autocomplete="current-password" pattern="[0-9]*" placeholder="••••••" aria-label="PIN">
+        <input id="pin2" type="password" inputmode="numeric" pattern="[0-9]*" placeholder="Repeat PIN" aria-label="Repeat PIN" hidden>
+        <button class="btn primary" type="submit" id="login-btn">Unlock</button>
+      </form>
+      <p id="login-error" class="error"></p>
+    </div>
+  </section>
+
+  <section id="main" hidden>
+    <header class="top">
+      <div class="device" id="device-pill"><span class="dot"></span><span id="device-name">No computer</span></div>
+      <div class="updated dim" id="updated"></div>
+      <button class="icon-btn" id="refresh" aria-label="Refresh">↻</button>
+    </header>
+
+    <div id="approvals"></div>
+
+    <div class="view" id="view-now">
+      <div id="now-cards"></div>
+    </div>
+
+    <div class="view" id="view-ask" hidden>
+      <div class="chat-tools"><button class="chip" id="new-chat">New chat</button><label class="chip toggle"><input type="checkbox" id="speak-toggle"> Speak replies</label></div>
+      <div id="chat"></div>
+      <div class="suggestions" id="suggestions">
+        <button class="chip">What's my next meeting?</button>
+        <button class="chip">Anything urgent in email or Slack?</button>
+        <button class="chip">What's on my screen?</button>
+        <button class="chip">Brief me on today</button>
+      </div>
+    </div>
+
+    <div class="view" id="view-screen" hidden>
+      <div class="card">
+        <div class="card-head"><h2>Screen</h2><button class="btn" id="shot-btn">Take screenshot</button></div>
+        <p class="dim" id="shot-note">See what's on your computer right now. Needs "View the screen" switched on in the agent page on the computer.</p>
+        <img id="shot" alt="Screenshot of the computer" hidden>
+      </div>
+    </div>
+
+    <div class="view" id="view-more" hidden>
+      <div id="more"></div>
+    </div>
+
+    <form class="composer" id="composer">
+      <input id="ask-input" placeholder="Ask or tell Relay…" autocomplete="off" enterkeyhint="send">
+      <button type="button" class="mic" id="mic" aria-label="Talk"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+    </form>
+
+    <nav class="tabs">
+      <button data-view="now" class="active"><span>◉</span>Now</button>
+      <button data-view="ask"><span>✦</span>Ask</button>
+      <button data-view="screen"><span>▣</span>Screen</button>
+      <button data-view="more"><span>⚙</span>Devices</button>
+    </nav>
+  </section>
+  <div id="toast" role="status"></div>
+</div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

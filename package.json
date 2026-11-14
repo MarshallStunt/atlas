@@ -1,0 +1,16 @@
+{
+  "name": "relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phone/tablet command center for your work computer: hub + device agent + Chrome bridge",
+  "type": "module",
+  "scripts": {
+    "hub": "node hub/server.js",
+    "agent": "node agent/agent.js",
+    "start": "node start.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "ws": "^8.18.0"
+  }
+}
