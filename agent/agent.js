@@ -110,7 +110,7 @@ function overviewSpace(id) {
   const now = Date.now();
   const ch = appChoices(id);
   const on = key => ch.apps[CORE[key]] !== false;
-  const events = (inbox.calendar?.events || []).filter(e => !e.at || (e.at > now - 3600e3 && e.at < now + 36 * 3600e3)).slice(0, 20);
+  const events = (inbox.calendar?.events || []).filter(e => e.at && e.at > now - 3600e3 && e.at < now + 7 * 864e5).slice(0, 30); // the coming week
   return {
     connected: now - (inbox.receivedAt || 0) < 10 * 60 * 1000, updated: new Date(inbox.receivedAt).toISOString(),
     calendar: on('calendar') && inbox.calendar ? { email: inbox.calendar.email, events } : null,
