@@ -134,9 +134,22 @@ async function calendarAddress(fromGmail) {
 async function calendar(email) {
   email = await calendarAddress(email);
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const r = await fetchSignedIn(`https://calendar.google.com/calendar/htmlembed?src=${encodeURIComponent(email)}&mode=AGENDA&ctz=${encodeURIComponent(tz)}`, {
-    name: 'Google Calendar', tabPattern: 'https://calendar.google.com/*', openUrl: 'https://calendar.google.com/calendar/u/0/r',
-    good: r => r.ok && !/ServiceLogin|accounts\.google\.com/.test(r.url) && /<body/.test(r.text) });
+  const url = `https://calendar.google.com/calendar/htmlembed?src=${encodeURIComponent(email)}&mode=AGENDA&ctz=${encodeURIComponent(tz)}`;
+  // Only a real agenda counts (signed out, Google answers with a marketing page instead).
+  const isAgenda = t => /class="(date-section|no-events-container|no-events)|<tr class="event"/.test(t);
+  let html = null;
+  try { const r = await fetch(url, { credentials: 'include' }); const t = await r.text(); if (r.ok && isAgenda(t)) html = t; } catch {}
+  if (!html) {
+    // Load the agenda page itself in Aura's small pinned tab, exactly like opening it by hand, and read it there.
+    const tab = await ownTab('Google Calendar agenda', url);
+    if (SIGN_IN_PAGE.test(tab.url || '')) throw new Error(`SIGN_IN: you're signed out of Google Calendar (${email}). Sign in once in the pinned Calendar tab.`);
+    await chrome.tabs.reload(tab.id); await waitLoaded(tab.id, 30000); // fresh agenda every sync
+    const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => ({ url: location.href, html: document.documentElement.outerHTML }) });
+    if (SIGN_IN_PAGE.test(result?.url || '')) throw new Error(`SIGN_IN: you're signed out of Google Calendar (${email}). Sign in once in the pinned Calendar tab.`);
+    if (!isAgenda(result?.html || '')) throw new Error(`Google Calendar didn't show the agenda for ${email}; is this browser signed in to that account? Retrying next minute`);
+    html = result.html;
+  }
+  const r = { text: html };
   const events = [];
   for (const sec of r.text.split('class="date-section').slice(1)) {
     const date = decode((sec.match(/<div class="date">([^<]+)</) || [])[1] || '');
@@ -407,7 +420,7 @@ function sync() {
 // Only Aura's own tabs (remembered by ID) are closed; tabs you opened yourself are never touched.
 async function closeTurnedOffTabs(apps) {
   const { tabs = {}, ownTabs = {} } = await chrome.storage.local.get(['tabs', 'ownTabs']);
-  const plan = [['gmail', tabs, 'Gmail'], ['gcal', tabs, 'Google Calendar'], ['slack', tabs, 'Slack'], ['outlook', ownTabs, 'Outlook mail'], ['outlook', ownTabs, 'Outlook calendar']];
+  const plan = [['gmail', tabs, 'Gmail'], ['gcal', tabs, 'Google Calendar'], ['gcal', ownTabs, 'Google Calendar agenda'], ['slack', tabs, 'Slack'], ['outlook', ownTabs, 'Outlook mail'], ['outlook', ownTabs, 'Outlook calendar']];
   let changed = false;
   for (const [id, map, key] of plan) {
     if (apps[id] !== false || !map[key]) continue;
