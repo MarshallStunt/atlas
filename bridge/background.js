@@ -218,18 +218,36 @@ function sync() {
     const s = await settings();
     const out = { errors: {} };
     const grab = async (key, fn) => { try { out[key] = await fn(); } catch (e) { out.errors[key] = String(e.message || e); } };
-    await grab('gmail', gmail);
-    await Promise.all([grab('calendar', () => calendar(s.email || out.gmail?.email)), grab('slack', () => slackTabRun(null)), grab('tabs', listTabs)]);
+    // Only the apps chosen for this computer: turned-off apps are not read and get no pinned tab.
+    if (appOn('gmail')) await grab('gmail', gmail);
+    await Promise.all([
+      appOn('gcal') ? grab('calendar', () => calendar(s.email || out.gmail?.email)) : null,
+      appOn('slack') ? grab('slack', () => slackTabRun(null)) : null,
+      grab('tabs', async () => (await listTabs()).filter(t => allowedUrl(t.url).ok)),
+    ]);
     let ok = false;
     try {
       const r = await toAgent('/bridge/ingest', { method: 'POST', body: JSON.stringify(out) });
       ok = r.ok;
+      if (ok) setConfig((await r.json().catch(() => ({}))).config);
       if (!ok) out.errors.agent = `agent said ${r.status}`;
     } catch (e) { out.errors.agent = /fetch/i.test(e.message) ? 'the Aura agent is not running on this computer' : e.message; }
     const detail = { gmail: out.gmail ? `${out.gmail.unread} unread` : out.errors.gmail, calendar: out.calendar ? `${out.calendar.events.length} events` : out.errors.calendar, slack: out.slack ? `${out.slack.mentions.length} mentions` : out.errors.slack, ...(out.errors.agent ? { agent: out.errors.agent } : {}) };
     await chrome.storage.local.set({ lastRun: { at: Date.now(), ok, detail } });
   })().finally(() => { syncing = null; });
   return syncing;
+}
+
+/* ---------- which apps this computer uses (set in Aura → System → Apps; sent by the agent) ---------- */
+let appConfig = null;
+chrome.storage.local.get('appConfig').then(r => { appConfig ||= r.appConfig || null; });
+function setConfig(c) { if (c && c.apps) { appConfig = c; chrome.storage.local.set({ appConfig: c }); } }
+const appOn = id => appConfig?.apps?.[id] !== false;
+function allowedUrl(url) {
+  if (!appConfig || !/^https?:\/\//i.test(url || '')) return { ok: true };
+  const host = String(url).replace(/^https?:\/\//, '');
+  for (const [id, re] of Object.entries(appConfig.matchers || {})) if (new RegExp(re, 'i').test(host)) return appConfig.apps[id] === false ? { ok: false, why: `That app is turned off for this computer in Aura.` } : { ok: true };
+  return appConfig.otherSites === false ? { ok: false, why: 'Only the apps chosen for this computer can be read.' } : { ok: true };
 }
 
 /* ---------- general web-app access: list, read and (with approval) act in tabs ---------- */
@@ -293,15 +311,18 @@ async function readJob({ tabId, url, find }) {
   if (tabId) tab = await chrome.tabs.get(Number(tabId));
   else if (url) {
     if (!/^https?:\/\//i.test(url)) throw new Error('Only http(s) pages can be read.');
+    { const a = allowedUrl(url); if (!a.ok) throw new Error(a.why); }
     const want = url.replace(/[#?].*$/, '');
     tab = (await chrome.tabs.query({})).find(t => (t.url || '').startsWith(want));
     if (!tab) { tab = await chrome.tabs.create({ url, active: false }); await waitLoaded(tab.id); tab = await chrome.tabs.get(tab.id); }
   } else throw new Error('Give a tabId or a url.');
   if (!readable(tab)) throw new Error('That tab is not a web page.');
+  const allowed = allowedUrl(tab.url); if (!allowed.ok) throw new Error(allowed.why);
   const snap = await inTab(tab.id, snapshotPage, [find || '']);
   return { tabId: tab.id, ...snap };
 }
 async function actJob({ tabId, ref, action, text }) {
+  const allowed = allowedUrl((await chrome.tabs.get(Number(tabId))).url); if (!allowed.ok) throw new Error(allowed.why);
   const r = await inTab(Number(tabId), actInPage, [String(ref), action, String(text || '')]);
   if (!r?.ok) throw new Error(r?.error || 'action failed');
   await new Promise(res => setTimeout(res, 1500));
@@ -328,7 +349,7 @@ async function pollJobs() {
       try {
         const r = await toAgent('/bridge/jobs');
         if (!r.ok) return;
-        ({ jobs = [] } = await r.json());
+        const body = await r.json(); jobs = body.jobs || []; setConfig(body.config);
       } catch { return; }
       for (const job of jobs) {
         let reply;

@@ -464,10 +464,12 @@ function renderNow() {
 
   // Inbox (mail / chat)
   const mails = inbox.gmail?.latest || [], chats = inbox.slack?.mentions || [];
+  if (!inbox.gmail && inboxTab === 'mail') inboxTab = 'chat';
+  if (!inbox.slack && inboxTab === 'chat') inboxTab = 'mail';
   const list = inboxTab === 'mail'
     ? mails.slice(0, 7).map((m, i) => `<div class="msg-item" data-mail="${i}"><div class="avatar" style="background:${avatarColor(m.from || m.fromEmail)}">${esc(initials(m.from || m.fromEmail))}</div><div style="min-width:0"><div class="who">${esc(m.from || m.fromEmail)}</div><div class="subj">${esc(m.subject)}</div><div class="snip">${esc(m.snippet)}</div></div><div class="ago">${esc(short(m.at))}</div></div>`).join('') || '<div class="empty">Inbox zero. ✨</div>'
     : chats.slice(0, 7).map((m, i) => `<div class="msg-item" data-chat="${i}"><div class="avatar" style="background:${avatarColor(m.user)}">${esc(initials(m.user))}</div><div style="min-width:0"><div class="who">${esc(m.user)} <span class="dim" style="font-weight:400">${m.isDm ? '· DM' : m.channel ? '· #' + esc(m.channel) : ''}</span></div><div class="snip" style="color:var(--text)">${esc(m.text)}</div></div><div class="ago">${esc(short(m.at))}</div></div>`).join('') || '<div class="empty">No mentions in the last 2 days.</div>';
-  parts.push(`<div class="panel"><div class="panel-head"><div class="seg"><button data-seg="mail" class="${inboxTab === 'mail' ? 'on' : ''}">Mail <b>${unread}</b></button><button data-seg="chat" class="${inboxTab === 'chat' ? 'on' : ''}">Slack <b>${mentions}</b></button></div>
+  if (inbox.gmail || inbox.slack) parts.push(`<div class="panel"><div class="panel-head"><div class="seg">${inbox.gmail ? `<button data-seg="mail" class="${inboxTab === 'mail' ? 'on' : ''}">Mail <b>${unread}</b></button>` : ''}${inbox.slack ? `<button data-seg="chat" class="${inboxTab === 'chat' ? 'on' : ''}">Slack <b>${mentions}</b></button>` : ''}</div>
     <button class="btn sm" data-ask="${inboxTab === 'mail' ? 'Go through my unread email: who needs what from me, and what can wait?' : 'What do people need from me on Slack? Most urgent first.'}">${icon('spark', 13)} Triage</button></div>
     ${list}</div>`);
 
@@ -589,6 +591,8 @@ function renderSystem() {
   $('#view-system').innerHTML = `
     <div class="panel edge" id="connections"><div class="panel-head"><span class="label">Connections</span><button class="icon-btn" id="conn-refresh" aria-label="Check again">${I.refresh}</button></div><div class="shimmer"></div><div class="shimmer" style="width:70%"></div></div>
 
+    <div class="panel" id="sec-apps">${appsPanel()}</div>
+
     <div class="panel" id="sec-network">${networkPanel()}</div>
 
     <div class="panel" id="sec-test"><div class="panel-head"><span class="label">AI check</span><button class="btn glow sm" id="test-ai">${icon('spark', 13)} Test AI</button></div>
@@ -632,6 +636,29 @@ async function reconnectAll(btn) {
   catch (e) { toast(e.message); }
   setTimeout(async () => { try { await api('/api/action', { method: 'POST', body: { tool: 'get_overview' } }); } catch {} loadConnections(); btn.disabled = false; btn.textContent = label; }, 2500);
 }
+
+/* ---------- Apps per computer ---------- */
+function appsPanel() {
+  const d = device(), a = state.snapshot?.apps;
+  if (!d) return `<div class="label">Apps</div><p class="dim">Pair a computer first.</p>`;
+  if (!a) return `<div class="label">Apps on ${esc(d.name)}</div><p class="dim">${d.online ? 'Waiting for the computer…' : 'The computer is offline.'} Update Aura on it to choose apps.</p>`;
+  const sw = (id, name, on, sub) => `<div class="conn ${on ? 'ok' : 'off'}"><span class="cdot"></span><div class="cmain"><div class="cname">${esc(name)}</div>${sub ? `<div class="cdet">${esc(sub)}</div>` : ''}</div><button class="chip toggle" data-app="${esc(id)}" aria-pressed="${on}" ${d.online ? '' : 'disabled'}><span class="led"></span>${on ? 'On' : 'Off'}</button></div>`;
+  return `<div class="panel-head"><span class="label">Apps on ${esc(d.name)}</span></div>
+    <p class="dim" style="font-size:13px;margin:0 0 6px">Choose what Aura uses on this computer. Off means not synced, not opened, and not read even when you ask.</p>
+    <div class="conn-group">On the dashboard</div>${a.list.filter(x => x.synced).map(x => sw(x.id, x.name, x.on)).join('')}
+    <div class="conn-group">Read when you ask</div>${a.list.filter(x => !x.synced).map(x => sw(x.id, x.name, x.on)).join('')}
+    ${sw('__other', 'Other websites', a.otherSites, 'Any site not listed above, open in the browser')}`;
+}
+$('#view-system').addEventListener('click', async e => {
+  const t = e.target.closest('[data-app]'); if (!t || t.disabled) return;
+  const on = t.getAttribute('aria-pressed') !== 'true', id = t.dataset.app;
+  t.disabled = true;
+  try {
+    await api('/api/action', { method: 'POST', body: { tool: 'set_apps', input: id === '__other' ? { otherSites: on } : { apps: { [id]: on } } } });
+    await new Promise(r => setTimeout(r, 500)); await refresh(true);
+  } catch (err) { toast(err.message); }
+  $('#sec-apps').innerHTML = appsPanel(); loadConnections();
+});
 
 /* ---------- Other devices (local network) ---------- */
 function networkPanel() {

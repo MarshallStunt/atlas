@@ -21,7 +21,7 @@ export const POLICY_DEFAULTS = {
 export const TOOL_POLICY = {
   get_overview: 'status', view_screen: 'screen', open_on_computer: 'open', draft_email: 'open',
   notify_computer: 'notify', lock_computer: 'notify', run_command: 'shell',
-  browser_tabs: 'browser_read', browser_read: 'browser_read', reconnect: 'browser_read', browser_act: 'browser_act', slack_send: 'browser_act',
+  browser_tabs: 'browser_read', browser_read: 'browser_read', reconnect: 'browser_read', set_apps: 'status', browser_act: 'browser_act', slack_send: 'browser_act',
 };
 
 const run = (cmd, args, { timeout = 6000 } = {}) => new Promise(resolve => {
@@ -179,17 +179,29 @@ async function screenshot() {
       return shotResult(raw);
     }
     if (WIN) {
-      const r = await new Promise(resolve => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
-Add-Type -AssemblyName System.Windows.Forms,System.Drawing
-$b=[System.Windows.Forms.SystemInformation]::VirtualScreen
-$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height
-$g=[System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Left,$b.Top,0,0,$bmp.Size)
-$s=[Math]::Min(1, 1400/[Math]::Max($b.Width,$b.Height)); $w=[int]($b.Width*$s); $h=[int]($b.Height*$s)
-$small=New-Object System.Drawing.Bitmap $bmp,$w,$h
-$enc=[System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()|?{$_.MimeType -eq 'image/jpeg'}
-$p=New-Object System.Drawing.Imaging.EncoderParameters 1; $p.Param[0]=New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality),[long]70
-$small.Save($env:AURA_OUT,$enc,$p)`], { env: { ...process.env, AURA_OUT: out }, timeout: 20000, windowsHide: true }, err => resolve({ ok: !err })));
-      if (!r.ok || !fs.existsSync(out)) fail('PowerShell could not capture the screen (it must run in your desktop session, not as a service).');
+      // DPI-aware so the whole screen is captured on scaled displays; any failure comes back word for word.
+      const script = [
+        'Add-Type -AssemblyName System.Windows.Forms, System.Drawing',
+        'Add-Type -TypeDefinition \'using System; using System.Runtime.InteropServices; public class AuraDpi { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }\'',
+        '[AuraDpi]::SetProcessDPIAware() | Out-Null',
+        '$b = [System.Windows.Forms.SystemInformation]::VirtualScreen',
+        '$bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)',
+        '$g = [System.Drawing.Graphics]::FromImage($bmp)',
+        '$g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)',
+        '$s = [Math]::Min(1.0, 1400.0 / [Math]::Max($b.Width, $b.Height))',
+        '$small = New-Object System.Drawing.Bitmap($bmp, [int]($b.Width * $s), [int]($b.Height * $s))',
+        '$enc = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq "image/jpeg" }',
+        '$p = New-Object System.Drawing.Imaging.EncoderParameters(1)',
+        '$p.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]70)',
+        '$small.Save($env:AURA_OUT, $enc, $p)',
+        '$g.Dispose(); $bmp.Dispose(); $small.Dispose()',
+      ].join('; ');
+      const r = await new Promise(resolve => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+        { env: { ...process.env, AURA_OUT: out }, timeout: 25000, windowsHide: true }, (err, stdout, stderr) => resolve({ ok: !err, err: String(stderr || err?.message || '').trim() })));
+      if (!r.ok || !fs.existsSync(out)) {
+        const why = /CopyFromScreen|handle is invalid|desktop/i.test(r.err) ? 'Windows has no screen to capture right now (locked, asleep, or Aura is running outside your desktop session).' : r.err.split('\n').slice(0, 3).join(' ').slice(0, 300);
+        fail(why || 'PowerShell could not capture the screen.');
+      }
       return shotResult(out);
     }
     // Linux: whichever screenshot tool is installed (Wayland: grim; X11: scrot / ImageMagick import / gnome-screenshot).
@@ -231,4 +243,32 @@ export function makeTools({ overview, browser }) {
     browser_act: input => browser('act', input),
     slack_send: input => browser('slack_send', input),
   };
+}
+
+/* ---------------- which apps Aura uses on this computer ----------------
+   Computers differ (Gmail here, Outlook there). "synced" apps feed the dashboard; the rest are read
+   only when you ask. Turned-off apps are not synced, not opened, not read and not acted in. */
+export const APPS = [
+  { id: 'gmail', name: 'Gmail', kind: 'mail', synced: true, match: 'mail\\.google\\.com' },
+  { id: 'gcal', name: 'Google Calendar', kind: 'calendar', synced: true, match: 'calendar\\.google\\.com' },
+  { id: 'slack', name: 'Slack', kind: 'chat', synced: true, match: '(^|\\.)slack\\.com' },
+  { id: 'outlook', name: 'Outlook (mail & calendar)', kind: 'mail', match: 'outlook\\.(office|office365|live)\\.com' },
+  { id: 'teams', name: 'Microsoft Teams', kind: 'chat', match: 'teams\\.(microsoft|live|cloud\\.microsoft)\\.com|teams\\.cloud\\.microsoft' },
+  { id: 'gdrive', name: 'Google Drive & Docs', kind: 'docs', match: '(drive|docs|sheets|slides)\\.google\\.com' },
+  { id: 'jira', name: 'Jira', kind: 'work', match: 'atlassian\\.net/(jira|browse|projects|secure)' },
+  { id: 'confluence', name: 'Confluence', kind: 'docs', match: 'atlassian\\.net/wiki' },
+  { id: 'github', name: 'GitHub', kind: 'work', match: '(^|\\.)github\\.com' },
+  { id: 'notion', name: 'Notion', kind: 'docs', match: 'notion\\.(so|site)' },
+  { id: 'salesforce', name: 'Salesforce', kind: 'work', match: '(salesforce|force|lightning\\.force)\\.com' },
+  { id: 'zoom', name: 'Zoom (web)', kind: 'meeting', match: '(^|\\.)zoom\\.us' },
+  { id: 'linear', name: 'Linear', kind: 'work', match: 'linear\\.app' },
+];
+const appRe = Object.fromEntries(APPS.map(a => [a.id, new RegExp(a.match, 'i')]));
+export const appOf = url => { const u = String(url || '').replace(/^https?:\/\//, ''); return APPS.find(a => appRe[a.id].test(u)) || null; };
+// Is reading/acting on this page allowed by the app choices? { ok, app, reason }
+export function urlAllowed(url, choices) {
+  if (!/^https?:\/\//i.test(String(url || ''))) return { ok: true };
+  const app = appOf(url);
+  if (app) return choices.apps[app.id] === false ? { ok: false, app, reason: `${app.name} is turned off for this computer in Aura (System → Apps).` } : { ok: true, app };
+  return choices.otherSites === false ? { ok: false, reason: 'Only the apps chosen for this computer can be read (System → Apps → Other websites is off).' } : { ok: true };
 }

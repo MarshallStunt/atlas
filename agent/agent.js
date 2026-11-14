@@ -12,7 +12,7 @@ import path from 'node:path';
 import WebSocket from 'ws';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { POLICY_DEFAULTS, TOOL_POLICY, status, makeTools } from './capabilities.js';
+import { POLICY_DEFAULTS, TOOL_POLICY, status, makeTools, APPS, appOf, urlAllowed } from './capabilities.js';
 
 const DATA = process.env.AURA_AGENT_DATA || path.join(os.homedir(), '.aura-agent');
 const LOCAL_PORT = Number(process.env.AURA_AGENT_PORT || 8101);
@@ -34,6 +34,15 @@ function policy() {
 }
 const allowed = key => policy()[key]?.on;
 
+/* ---------------- app choices for this computer ---------------- */
+function appChoices() {
+  const saved = readJson('apps.json', {});
+  return { apps: Object.fromEntries(APPS.map(a => [a.id, saved.apps?.[a.id] !== false])), otherSites: saved.otherSites !== false };
+}
+// What the browser extension needs to know: which apps to sync and which sites it may read.
+const bridgeConfig = () => { const c = appChoices(); return { apps: c.apps, otherSites: c.otherSites, matchers: Object.fromEntries(APPS.map(a => [a.id, a.match])) }; };
+const CORE = { gmail: 'gmail', calendar: 'gcal', slack: 'slack' }; // inbox key -> app id
+
 /* ---------------- bridge state (Gmail / Calendar / Slack from Chrome) ---------------- */
 let bridgeToken = fs.existsSync(f('bridge-token')) ? fs.readFileSync(f('bridge-token'), 'utf8').trim() : '';
 if (!bridgeToken) { bridgeToken = crypto.randomBytes(18).toString('base64url'); fs.writeFileSync(f('bridge-token'), bridgeToken, { mode: 0o600 }); }
@@ -48,6 +57,9 @@ let browserApp = readJson('browser.json', {}).app || 'Google Chrome'; // which b
 let lastLaunch = 0;
 // Hand a job to the browser extension and wait for its answer.
 function browser(kind, input) {
+  const ch = appChoices();
+  if (kind === 'read' && input?.url) { const v = urlAllowed(input.url, ch); if (!v.ok) return Promise.reject(new Error(v.reason)); }
+  if (kind === 'slack_send' && ch.apps.slack === false) return Promise.reject(new Error('Slack is turned off for this computer in Aura (System → Apps).'));
   if (Date.now() - bridgeSeen > 90 * 1000) return Promise.reject(new Error('The browser extension is not connected on this computer. Open Chrome / Edge / Brave with the Aura Bridge extension installed.'));
   const job = { id: crypto.randomUUID(), kind, input };
   return new Promise((resolve, reject) => {
@@ -58,20 +70,22 @@ function browser(kind, input) {
   });
 }
 function flushJobs() {
-  if (jobPoller && bridgeJobs.length) { const { res, timer } = jobPoller; jobPoller = null; clearTimeout(timer); json(res, 200, { jobs: bridgeJobs.splice(0) }); }
+  if (jobPoller && bridgeJobs.length) { const { res, timer } = jobPoller; jobPoller = null; clearTimeout(timer); json(res, 200, { jobs: bridgeJobs.splice(0), config: bridgeConfig() }); }
 }
 
 function overviewInbox() {
   if (!inbox) return { connected: false, note: 'The Chrome bridge has not sent anything yet.' };
   const now = Date.now();
+  const ch = appChoices();
+  const on = key => ch.apps[CORE[key]] !== false;
   const events = (inbox.calendar?.events || []).filter(e => !e.at || (e.at > now - 3600e3 && e.at < now + 36 * 3600e3)).slice(0, 20);
   return {
     connected: now - (inbox.receivedAt || 0) < 10 * 60 * 1000, updated: new Date(inbox.receivedAt).toISOString(),
-    calendar: inbox.calendar ? { events } : null,
-    gmail: inbox.gmail ? { unread: inbox.gmail.unread, latest: (inbox.gmail.entries || []).slice(0, 15) } : null,
-    slack: inbox.slack ? { team: inbox.slack.team, mentions: (inbox.slack.mentions || []).filter(m => m.at > now - 48 * 3600e3).slice(0, 15) } : null,
-    openTabs: (inbox.tabs || []).slice(0, 30),
-    errors: inbox.errors || {},
+    calendar: on('calendar') && inbox.calendar ? { events } : null,
+    gmail: on('gmail') && inbox.gmail ? { unread: inbox.gmail.unread, latest: (inbox.gmail.entries || []).slice(0, 15) } : null,
+    slack: on('slack') && inbox.slack ? { team: inbox.slack.team, mentions: (inbox.slack.mentions || []).filter(m => m.at > now - 48 * 3600e3).slice(0, 15) } : null,
+    openTabs: (inbox.tabs || []).filter(t => urlAllowed(t.url, ch).ok).slice(0, 30),
+    errors: Object.fromEntries(Object.entries(inbox.errors || {}).filter(([k]) => !CORE[k] || on(k))),
   };
 }
 
@@ -82,6 +96,7 @@ async function overview() {
     computer: p.status.on ? await status() : { note: 'Status is switched off on this computer.' },
     inbox: p.browser_read.on ? overviewInbox() : { note: 'Reading web apps is switched off on this computer.' },
     capabilities: Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v.on])),
+    apps: (() => { const ch = appChoices(); return { otherSites: ch.otherSites, list: APPS.map(a => ({ id: a.id, name: a.name, kind: a.kind, synced: !!a.synced, on: ch.apps[a.id] })) }; })(),
     // For the Connections panel on the phone: is the browser extension alive, and where it lives.
     bridge: { lastSync: inbox?.receivedAt || null, lastPoll: bridgeSeen || null, extension: bridgeExtension || null, folder: path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'bridge') },
   };
@@ -115,6 +130,25 @@ setInterval(() => {
   if (!bridgeExtension && !inbox) return; // never set up on this computer: nothing to reconnect
   launchBrowser('watchdog');
 }, 60 * 1000);
+
+// Double-check the extension's answers against the app choices before anything reaches the hub.
+tools.browser_tabs = async () => { const r = await browser('tabs', {}); const ch = appChoices(); return { tabs: (r?.tabs || []).filter(t => urlAllowed(t.url, ch).ok) }; };
+const readTool = tools.browser_read, actTool = tools.browser_act;
+tools.browser_read = async input => { const r = await readTool(input); const v = urlAllowed(r?.url, appChoices()); if (!v.ok) throw new Error(v.reason); return r; };
+tools.browser_act = async input => { const r = await actTool(input); const v = urlAllowed(r?.after?.url, appChoices()); if (!v.ok) throw new Error(v.reason); return r; };
+
+// Choosing apps for this computer (from System → Apps on the phone). Applies at once.
+tools.set_apps = async ({ apps = {}, otherSites } = {}) => {
+  const cur = appChoices();
+  for (const [id, on] of Object.entries(apps)) if (APPS.some(a => a.id === id)) cur.apps[id] = !!on;
+  if (typeof otherSites === 'boolean') cur.otherSites = otherSites;
+  writeJson('apps.json', cur);
+  audit({ event: 'apps.changed', apps: cur.apps, otherSites: cur.otherSites });
+  log('Apps changed: off = ' + (Object.entries(cur.apps).filter(([, v]) => !v).map(([k]) => k).join(', ') || 'none'));
+  if (jobPoller) { const { res, timer } = jobPoller; jobPoller = null; clearTimeout(timer); json(res, 200, { jobs: [], config: bridgeConfig() }); } // tell the extension now
+  pushSnapshot();
+  return { ok: true, ...cur };
+};
 
 tools.reconnect = async () => {
   if (!allowed('browser_read')) return { ok: false, note: 'Reading web apps is switched off on this computer.' };
@@ -258,12 +292,12 @@ const local = http.createServer(async (req, res) => {
         inbox = { ...(inbox || {}), ...b, errors: b.errors || {}, receivedAt: Date.now() };
         writeJson('inbox.json', inbox);
         pushSnapshot();
-        return json(res, 200, { ok: true });
+        return json(res, 200, { ok: true, config: bridgeConfig() });
       }
       if (url.pathname === '/bridge/jobs') {
         bridgeSeen = Date.now();
-        if (jobPoller) { clearTimeout(jobPoller.timer); json(jobPoller.res, 200, { jobs: [] }); }
-        const timer = setTimeout(() => { if (jobPoller?.res === res) { jobPoller = null; json(res, 200, { jobs: [] }); } }, 25000);
+        if (jobPoller) { clearTimeout(jobPoller.timer); json(jobPoller.res, 200, { jobs: [], config: bridgeConfig() }); }
+        const timer = setTimeout(() => { if (jobPoller?.res === res) { jobPoller = null; json(res, 200, { jobs: [], config: bridgeConfig() }); } }, 25000);
         jobPoller = { res, timer };
         req.on('close', () => { if (jobPoller?.res === res) { clearTimeout(timer); jobPoller = null; } });
         return flushJobs();

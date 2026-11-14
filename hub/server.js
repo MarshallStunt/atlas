@@ -87,7 +87,7 @@ function state() {
 
 // Direct actions from buttons on the dashboard. The user tapped them, so they count as the user's
 // own intent; the computer still applies its local policy.
-const BUTTON_ACTIONS = new Set(['open_on_computer', 'notify_computer', 'lock_computer', 'view_screen', 'get_overview', 'reconnect']);
+const BUTTON_ACTIONS = new Set(['open_on_computer', 'notify_computer', 'lock_computer', 'view_screen', 'get_overview', 'reconnect', 'set_apps']);
 
 async function handler(req, res) {
   const url = new URL(req.url, 'http://x');

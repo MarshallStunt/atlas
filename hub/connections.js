@@ -52,8 +52,11 @@ export function connections(net = {}) {
   else add('Computer', 'Browser extension', 'error', `${bridge.lastSync ? `Not syncing since ${ago(bridge.lastSync)}.` : 'Never connected.'} Aura restarts the browser by itself if it's closed; if it stays red, the extension needs reloading.`, { type: 'text', how: extHow });
 
   // ---- core apps ----
+  const appsOn = Object.fromEntries((snap?.apps?.list || []).map(a => [a.id, a.on]));
   const app = (name, key, data, okText, url) => {
     if (!dev) return;
+    const id = { gmail: 'gmail', calendar: 'gcal', slack: 'slack' }[key];
+    if (appsOn[id] === false) return add('Apps', name, 'off', 'Turned off for this computer.', goto('Change', 'apps'));
     if (!caps.browser_read) return add('Apps', name, 'off', 'Off: reading web apps is switched off on the computer.');
     if (errs[key] && /^SIGN_IN:/.test(errs[key])) return add('Apps', name, 'error', errs[key].replace(/^SIGN_IN:\s*/, '') + ' Aura can\'t sign in for you.', open(`Open ${name} to sign in`, url));
     if (errs[key]) return add('Apps', name, 'warn', `${errs[key].replace(/; retrying next minute$/, '')}. Aura retries automatically every minute.`, { type: 'reconnect', label: 'Retry now' });
@@ -68,7 +71,9 @@ export function connections(net = {}) {
 
   // ---- other web apps, readable on request when open ----
   const tabs = inbox.openTabs || [];
+  const offByName = new Set((snap?.apps?.list || []).filter(a => !a.on).map(a => a.name.split(' (')[0]));
   for (const [name, re, url] of WEB_APPS) {
+    if (offByName.has(name) || (name === 'Google Drive & Docs' && appsOn.gdrive === false)) { add('Web apps', name, 'off', 'Turned off for this computer.'); continue; }
     const hit = tabs.some(t => re.test(t.url || ''));
     if (hit) add('Web apps', name, caps.browser_read && bridgeOk ? 'ok' : 'warn', caps.browser_read && bridgeOk ? 'Open in the browser: Aura can read it when you ask.' : 'Open, but the extension isn\'t syncing.');
     else if (url) add('Web apps', name, 'idle', 'Not open. Aura can use it once it\'s open in the browser.', open(`Open ${name} on computer`, url));
