@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Aura Bridge",
-  "version": "0.6.1",
-  "description": "Connects this browser to Aura on your computer: reads the web apps you're signed in to (mail, calendar, chat) and hands them only to the Aura agent here.",
+  "name": "Atlas Bridge",
+  "version": "0.7.0",
+  "description": "Connects this browser to Atlas on your computer: reads the web apps you're signed in to (mail, calendar, chat) and hands them only to the Atlas agent here.",
   "permissions": [
     "storage",
     "alarms",
@@ -16,7 +16,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Aura Bridge",
+    "default_title": "Atlas Bridge",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",

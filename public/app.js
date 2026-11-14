@@ -1,4 +1,4 @@
-// Aura phone UI. Everything from email, chat, calendar and the screen is untrusted text, so it is
+// Atlas phone UI. Everything from email, chat, calendar and the screen is untrusted text, so it is
 // always escaped before it reaches the page.
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -6,8 +6,8 @@ const safeHref = u => /^https?:\/\//i.test(String(u || '')) ? esc(u) : '#';
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 let state = null, view = 'now', inboxTab = 'mail', briefData = null, briefLoading = false;
 // Which space the dashboard and assistant use: 'all' (every non-private space) or a space id.
-let spaceView = (() => { try { return localStorage.getItem('aura.space') || 'all'; } catch { return 'all'; } })();
-const setSpaceView = v => { spaceView = v; try { localStorage.setItem('aura.space', v); } catch {} };
+let spaceView = (() => { try { return localStorage.getItem('atlas.space') || 'all'; } catch { return 'all'; } })();
+const setSpaceView = v => { spaceView = v; try { localStorage.setItem('atlas.space', v); } catch {} };
 const spacesOf = snap => snap?.spaces || (snap ? [{ id: 'main', name: '', private: false, inbox: snap.inbox || {}, apps: snap.apps, bridge: snap.bridge }] : []);
 function visibleSpaces(snap) {
   const list = spacesOf(snap);
@@ -26,7 +26,7 @@ const PALETTES = {
   mono: { name: 'Mono', c: ['#e5e7eb', '#9ca3af', '#cbd5e1'] },
 };
 const UI_DEFAULT = { palette: 'aurora', mode: 'dark', size: 'm', motion: 'full' };
-let ui = (() => { try { return { ...UI_DEFAULT, ...JSON.parse(localStorage.getItem('aura.ui') || '{}') }; } catch { return { ...UI_DEFAULT }; } })();
+let ui = (() => { try { return { ...UI_DEFAULT, ...JSON.parse(localStorage.getItem('atlas.ui') || '{}') }; } catch { return { ...UI_DEFAULT }; } })();
 let orbColors = PALETTES.aurora.c;
 const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`; };
 function applyTheme(next) {
@@ -39,7 +39,7 @@ function applyTheme(next) {
   root.dataset.motion = ui.motion;
   root.style.zoom = { s: '0.92', m: '1', l: '1.1', xl: '1.2' }[ui.size] || '1';
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', light ? '#f3f5fa' : '#04060c');
-  try { localStorage.setItem('aura.ui', JSON.stringify(ui)); } catch {}
+  try { localStorage.setItem('atlas.ui', JSON.stringify(ui)); } catch {}
 }
 applyTheme();
 matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => ui.mode === 'auto' && applyTheme());
@@ -89,14 +89,31 @@ const I = {
 const icon = (name, size = 16) => I[name].replace('<svg', `<svg width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"`);
 
 /* ============================== the orb ============================== */
-// One animation loop draws every orb on the page; its look follows what Aura is doing.
+// One animation loop draws every orb on the page; its look follows what Atlas is doing.
 const orb = { state: 'idle', level: 0, target: 0, canvases: [], t: 0 };
 function addOrb(c) { if (c) orb.canvases.push({ c, ctx: c.getContext('2d') }); }
 function setOrb(s) {
   orb.state = s;
-  $('#stage-state').textContent = { idle: handsFree ? 'HANDS-FREE · TAP TO TALK' : 'TAP THE ORB TO TALK', listening: 'LISTENING', thinking: 'THINKING', speaking: 'SPEAKING · TAP TO INTERRUPT' }[s];
+  $('#stage-state').textContent = { idle: handsFree ? 'HANDS-FREE · TAP TO TALK' : 'TAP TO TALK', listening: 'LISTENING', thinking: 'THINKING', speaking: 'SPEAKING · TAP TO INTERRUPT' }[s];
 }
 let analyser = null, levels = null;
+// The constellation: points on a slowly turning sphere, linked to their nearest neighbours.
+// Idle: drifts and breathes. Listening: scatters outward with your voice. Thinking: draws in and
+// spins faster with an orbiting spark. Speaking: ripples in waves with the voice.
+function makeConstellation(n) {
+  const pts = [], golden = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) {
+    const y = 1 - (i / (n - 1)) * 2, r = Math.sqrt(1 - y * y), th = golden * i;
+    pts.push({ x: Math.cos(th) * r, y, z: Math.sin(th) * r, seed: Math.random() * Math.PI * 2, size: 0.6 + Math.random() * 0.8 });
+  }
+  const links = [];
+  for (let i = 0; i < n; i++) {
+    const near = pts.map((q, j) => [j, (pts[i].x - q.x) ** 2 + (pts[i].y - q.y) ** 2 + (pts[i].z - q.z) ** 2]).filter(([j]) => j > i).sort((a, b) => a[1] - b[1]).slice(0, 3);
+    for (const [j, d] of near) if (d < 0.2) links.push([i, j]);
+  }
+  return { pts, links };
+}
+const CONST = { small: makeConstellation(70), big: makeConstellation(150) };
 function drawOrbs() {
   orb.t += 1 / 60;
   if (orb.state === 'speaking' && analyser) {
@@ -106,55 +123,60 @@ function drawOrbs() {
     if (!sum) orb.target = 0.45 + 0.25 * Math.sin(orb.t * 9); // phone voice: no audio data, animate anyway
   } else if (orb.state === 'listening') orb.target = Math.max(orb.target * 0.9, 0.12 + 0.05 * Math.sin(orb.t * 6));
   else if (orb.state === 'thinking') orb.target = 0.35;
-  else orb.target = 0.12 + 0.05 * Math.sin(orb.t * 1.4);
-  orb.level += (orb.target - orb.level) * 0.18;
+  else orb.target = 0.1 + 0.04 * Math.sin(orb.t * 1.2);
+  orb.level += (orb.target - orb.level) * 0.15;
+  orb.spin = (orb.spin || 0) + (orb.state === 'thinking' ? 0.028 : 0.006 + orb.level * 0.01);
+  const L = orb.level, t = orb.t, st = orb.state;
   for (const { c, ctx } of orb.canvases) {
     if (!c.offsetParent) continue;
-    const w = c.width, h = c.height, cx = w / 2, cy = h / 2, R = w * 0.28;
+    const w = c.width, h = c.height, cx = w / 2, cy = h / 2;
+    const { pts, links } = w > 300 ? CONST.big : CONST.small;
+    const R = w * (st === 'thinking' ? 0.27 : 0.31);
     ctx.clearRect(0, 0, w, h);
-    const g = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * 1.9);
-    g.addColorStop(0, rgba(orbColors[0], 0.18 + orb.level * 0.25)); g.addColorStop(0.5, rgba(orbColors[1], 0.08)); g.addColorStop(1, 'rgba(0,0,0,0)');
+    // soft halo
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.6);
+    g.addColorStop(0, rgba(orbColors[1], 0.10 + L * 0.18)); g.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
-    // dark glass core, then three drifting colour lobes so the cyan / violet / pink stay distinct
-    const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.05);
-    core.addColorStop(0, '#101a33'); core.addColorStop(1, '#070b16');
-    ctx.fillStyle = core; ctx.beginPath(); ctx.arc(cx, cy, R * 0.98, 0, Math.PI * 2); ctx.fill();
-    ctx.globalCompositeOperation = 'lighter';
-    for (const [color, ph] of [[orbColors[0], 0], [orbColors[1], 2.1], [orbColors[2], 4.2]]) {
-      const ox = cx + Math.cos(orb.t * 0.6 + ph) * R * 0.32, oy = cy + Math.sin(orb.t * 0.8 + ph) * R * 0.32;
-      ctx.beginPath();
-      const N = 72, amp = 0.06 + orb.level * 0.3;
-      for (let i = 0; i <= N; i++) {
-        const a = (i / N) * Math.PI * 2;
-        const n = Math.sin(a * 3 + orb.t * 1.3 + ph) * 0.5 + Math.sin(a * 5 - orb.t * 1.9 + ph * 1.7) * 0.3 + Math.sin(a * 2 + orb.t * 0.7) * 0.2;
-        const r = R * (0.92 + amp * n);
-        const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
-        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-      }
-      const fg = ctx.createRadialGradient(ox, oy, 0, ox, oy, R * 0.95);
-      fg.addColorStop(0, color + 'bb'); fg.addColorStop(0.55, color + '40'); fg.addColorStop(1, color + '00');
-      ctx.fillStyle = fg; ctx.fill();
+    // project
+    const cosA = Math.cos(orb.spin), sinA = Math.sin(orb.spin), tilt = 0.35 + Math.sin(t * 0.2) * 0.1, cosB = Math.cos(tilt), sinB = Math.sin(tilt);
+    const proj = pts.map(p => {
+      let k = 1;
+      if (st === 'listening') k += L * (0.25 + 0.35 * (0.5 + 0.5 * Math.sin(p.seed + t * 7)));
+      else if (st === 'speaking') k += L * 0.28 * Math.sin(p.y * 5 - t * 9);
+      else if (st === 'thinking') k -= 0.06 * (0.5 + 0.5 * Math.sin(p.seed + t * 3));
+      else k += 0.03 * Math.sin(p.seed + t * 1.5);
+      const x = p.x * k, y = p.y * k, z = p.z * k;
+      const x1 = x * cosA + z * sinA, z1 = -x * sinA + z * cosA;
+      const y2 = y * cosB - z1 * sinB, z2 = y * sinB + z1 * cosB;
+      const persp = 1.9 / (2.6 - z2);
+      return { X: cx + x1 * R * persp, Y: cy + y2 * R * persp, depth: (z2 + 1) / 2, size: p.size };
+    });
+    // links
+    ctx.lineWidth = Math.max(0.6, w / 400);
+    for (const [i, j] of links) {
+      const a = proj[i], b = proj[j], d = (a.depth + b.depth) / 2;
+      ctx.strokeStyle = rgba(d > 0.5 ? orbColors[0] : orbColors[1], 0.06 + d * (0.28 + L * 0.3));
+      ctx.beginPath(); ctx.moveTo(a.X, a.Y); ctx.lineTo(b.X, b.Y); ctx.stroke();
     }
-    // rim light
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.strokeStyle = rgba(orbColors[0], 0.3 + orb.level * 0.4); ctx.lineWidth = Math.max(1, w / 200);
-    ctx.beginPath(); ctx.arc(cx, cy, R * (0.95 + orb.level * 0.08), 0, Math.PI * 2); ctx.stroke();
-    ctx.globalCompositeOperation = 'source-over';
-    const hl = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.4, 0, cx - R * 0.35, cy - R * 0.4, R * 0.6);
-    hl.addColorStop(0, 'rgba(255,255,255,.22)'); hl.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = hl; ctx.beginPath(); ctx.arc(cx, cy, R * 0.95, 0, Math.PI * 2); ctx.fill();
-    if (orb.state === 'thinking') {
-      ctx.lineWidth = Math.max(1.5, w / 160); ctx.lineCap = 'round';
-      for (let k = 0; k < 3; k++) {
-        ctx.strokeStyle = rgba(orbColors[k], [0.9, 0.8, 0.7][k]);
-        ctx.beginPath(); const s = orb.t * (1.6 + k * 0.7) * (k % 2 ? -1 : 1);
-        ctx.arc(cx, cy, R * (1.25 + k * 0.13), s, s + 1.1 + k * 0.4); ctx.stroke();
-      }
+    // points, back to front
+    const order = proj.map((p, i) => i).sort((a, b) => proj[a].depth - proj[b].depth);
+    for (const i of order) {
+      const p = proj[i], col = p.depth > 0.66 ? orbColors[0] : p.depth > 0.33 ? orbColors[1] : orbColors[2];
+      const r = Math.max(0.8, (w / 160) * p.size * (0.55 + p.depth * 0.9) * (1 + L * 0.5));
+      ctx.fillStyle = rgba(col, 0.25 + p.depth * 0.75);
+      ctx.beginPath(); ctx.arc(p.X, p.Y, r, 0, Math.PI * 2); ctx.fill();
+      if (p.depth > 0.85) { ctx.fillStyle = rgba('#ffffff', 0.35 * p.depth); ctx.beginPath(); ctx.arc(p.X, p.Y, r * 0.45, 0, Math.PI * 2); ctx.fill(); }
     }
-    if (orb.state === 'listening') {
-      ctx.strokeStyle = rgba(orbColors[0], 0.25 + orb.level * 0.5); ctx.lineWidth = Math.max(1, w / 220);
-      for (let k = 0; k < 2; k++) { const p = ((orb.t * 0.8 + k * 0.5) % 1); ctx.globalAlpha = 1 - p; ctx.beginPath(); ctx.arc(cx, cy, R * (1.1 + p * 0.7), 0, Math.PI * 2); ctx.stroke(); }
-      ctx.globalAlpha = 1;
+    // thinking: an orbiting spark; listening: a faint ring at the edge
+    if (st === 'thinking') {
+      const a = t * 3, sx = cx + Math.cos(a) * R * 1.25, sy = cy + Math.sin(a) * R * 0.45;
+      const sg = ctx.createRadialGradient(sx, sy, 0, sx, sy, w / 30);
+      sg.addColorStop(0, rgba(orbColors[2], 0.9)); sg.addColorStop(1, rgba(orbColors[2], 0));
+      ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(sx, sy, w / 30, 0, Math.PI * 2); ctx.fill();
+    }
+    if (st === 'listening') {
+      ctx.strokeStyle = rgba(orbColors[0], 0.15 + L * 0.35); ctx.lineWidth = Math.max(1, w / 260);
+      ctx.beginPath(); ctx.arc(cx, cy, R * (1.25 + L * 0.2), 0, Math.PI * 2); ctx.stroke();
     }
   }
   requestAnimationFrame(drawOrbs);
@@ -365,7 +387,7 @@ function showLogin(s = {}) {
   $('#pin2').hidden = !setupMode;
   $('#setup-code').hidden = !s.needsSetupCode;
   $('#login-btn').textContent = setupMode ? 'Set PIN' : 'Unlock';
-  $('#login-hint').textContent = setupMode ? 'Choose a 6–12 digit PIN' : s.needsSetup ? 'Set up Aura from the computer first: open http://127.0.0.1:8100 there.' : 'Enter your PIN';
+  $('#login-hint').textContent = setupMode ? 'Choose a 6–12 digit PIN' : s.needsSetup ? 'Set up Atlas from the computer first: open http://127.0.0.1:8100 there.' : 'Enter your PIN';
 }
 $('#login-form').addEventListener('submit', async e => {
   e.preventDefault(); $('#login-error').textContent = '';
@@ -467,7 +489,7 @@ function renderNow() {
   if (allSpaces.length > 1) parts.push(`<div class="spaces" role="tablist">${[{ id: 'all', name: 'All' }, ...allSpaces].map(x => `<button class="space-chip ${spaceView === x.id ? 'on' : ''}" data-space="${esc(x.id)}" role="tab" aria-selected="${spaceView === x.id}">${x.private ? '🔒 ' : ''}${esc(x.name)}</button>`).join('')}</div>`);
 
   if (!d) {
-    parts.push(`<div class="panel edge brief"><h2>Pair your computer</h2><p class="dim">On the computer, run the Aura installer. It shows a code; enter it under System.</p><div class="row-actions"><button class="btn glow" data-goto="system">Open System</button></div></div>`);
+    parts.push(`<div class="panel edge brief"><h2>Pair your computer</h2><p class="dim">On the computer, run the Atlas installer. It shows a code; enter it under System.</p><div class="row-actions"><button class="btn glow" data-goto="system">Open System</button></div></div>`);
     el.innerHTML = parts.join(''); return;
   }
 
@@ -520,7 +542,7 @@ function renderNow() {
     const i = x.inbox || {};
     return [
       i.gmail && { id: `${x.id}|gmail`, label: pre(x) + (i.outlook ? 'Gmail' : 'Mail'), n: i.gmail.unread, html: (i.gmail.latest || []).slice(0, 7).map((m, k) => mailRow(m, k, `${x.id}|gmail`)).join('') || '<div class="empty">Inbox zero. ✨</div>', ask: `Go through my unread Gmail${multi ? ` in the ${x.name} space` : ''}: who needs what from me, and what can wait?` },
-      i.outlook && { id: `${x.id}|outlook`, label: pre(x) + (i.gmail ? 'Outlook' : 'Mail'), n: i.outlook.unread, html: (i.outlook.latest || []).slice(0, 7).map((m, k) => mailRow(m, k, `${x.id}|outlook`)).join('') || (i.outlook.raw ? `<div class="empty">Outlook is open but its list couldn't be read. Ask Aura about it instead.</div>` : '<div class="empty">Inbox zero. ✨</div>'), ask: `Go through my Outlook inbox${multi ? ` in the ${x.name} space` : ''}: who needs what from me, and what can wait?` },
+      i.outlook && { id: `${x.id}|outlook`, label: pre(x) + (i.gmail ? 'Outlook' : 'Mail'), n: i.outlook.unread, html: (i.outlook.latest || []).slice(0, 7).map((m, k) => mailRow(m, k, `${x.id}|outlook`)).join('') || (i.outlook.raw ? `<div class="empty">Outlook is open but its list couldn't be read. Ask Atlas about it instead.</div>` : '<div class="empty">Inbox zero. ✨</div>'), ask: `Go through my Outlook inbox${multi ? ` in the ${x.name} space` : ''}: who needs what from me, and what can wait?` },
       i.slack && { id: `${x.id}|slack`, label: pre(x) + 'Slack', n: (i.slack.mentions || []).length, html: (i.slack.mentions || []).slice(0, 7).map((m, k) => `<div class="msg-item" data-chat="${k}" data-src="${esc(x.id)}|slack"><div class="avatar" style="background:${avatarColor(m.user)}">${esc(initials(m.user))}</div><div style="min-width:0"><div class="who">${esc(m.user)} <span class="dim" style="font-weight:400">${m.isDm ? '· DM' : m.channel ? '· #' + esc(m.channel) : ''}</span></div><div class="snip" style="color:var(--text)">${esc(m.text)}</div></div><div class="ago">${esc(short(m.at))}</div></div>`).join('') || '<div class="empty">No mentions in the last 2 days.</div>', ask: `What do people need from me on Slack${multi ? ` (${x.name} space)` : ''}? Most urgent first.` },
     ].filter(Boolean);
   });
@@ -582,7 +604,7 @@ function itemSheet(kind, m) {
   openSheet(`<div style="display:flex;gap:12px;align-items:center"><div class="avatar" style="background:${avatarColor(who)}">${esc(initials(who))}</div><div><h3>${esc(who)}</h3><div class="dim" style="font-size:13px">${esc(title)} · ${esc(rel(m.at))}</div></div></div>
     <div class="body">${esc(body)}</div>
     <div class="sheet-actions">
-      <button class="btn glow" data-ask="${esc(replyAsk)}">${icon('reply')} Draft a reply with Aura</button>
+      <button class="btn glow" data-ask="${esc(replyAsk)}">${icon('reply')} Draft a reply with Atlas</button>
       <button class="btn" data-ask="${esc(sumAsk)}">${icon('spark')} Summarize</button>
       <button class="btn" data-open="${esc(m.link)}">${icon('computer')} Open on computer</button>
       <a class="btn" href="${safeHref(m.link)}" target="_blank" rel="noopener">${icon('open')} Open here</a>
@@ -666,7 +688,7 @@ function renderSystem() {
       ${state.devices.map(d => `<div class="kv" style="align-items:center"><span style="text-transform:none;letter-spacing:0;font:inherit;color:var(--text);display:flex;gap:8px;align-items:center"><span class="dot ${d.online ? 'on' : ''}"></span>${esc(d.name)} <span class="mono dim" style="font-size:11px">${esc(PLAT[d.platform] || d.platform)}${d.selected ? ' · ACTIVE' : ''}</span></span>
         <span>${d.selected ? '' : `<button class="btn sm" data-dev="${esc(d.id)}" data-op="select">Use</button>`} <button class="btn sm danger" data-dev="${esc(d.id)}" data-op="revoke">Remove</button></span></div>`).join('') || '<div class="empty">No computers yet.</div>'}
       <form class="inline-form" id="pair-form"><input id="pair-code" placeholder="Pairing code  K7Q-42M" autocapitalize="characters" autocomplete="off"><button class="btn glow sm">Pair</button></form>
-      <p class="dim" style="font-size:13px">What Aura may do on a computer is set on that computer (http://127.0.0.1:8101).</p></div>
+      <p class="dim" style="font-size:13px">What Atlas may do on a computer is set on that computer (http://127.0.0.1:8101).</p></div>
 
     <div class="panel" id="sec-voice"><div class="panel-head"><span class="label">Voice</span><button class="btn sm" id="test-voice">▶ Test voice</button></div>
       <div class="field"><label for="set-vengine">Engine</label><select id="set-vengine">${[['auto', 'Auto — most natural available'], ['elevenlabs', 'ElevenLabs — most human'], ['openai', 'OpenAI — natural'], ['browser', 'Phone voice — basic']].map(([v, l]) => `<option value="${v}" ${v === s.voiceEngine ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
@@ -734,7 +756,7 @@ $('#view-system').addEventListener('click', async e => {
       const data = await api('/api/backup' + ($('#bk-keys').checked ? '?keys=1' : ''));
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-      a.download = `aura-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `atlas-backup-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
       toast(data.computer ? 'Saved' : 'Saved (the computer was offline, so its spaces weren\'t included)');
     } catch (err) { toast(err.message); }
@@ -745,7 +767,7 @@ $('#view-system').addEventListener('change', async e => {
   if (e.target.id !== 'bk-file' || !e.target.files[0]) return;
   try {
     const backup = JSON.parse(await e.target.files[0].text());
-    if (backup.type !== 'aura-backup') throw new Error("That file isn't an Aura backup.");
+    if (backup.type !== 'atlas-backup') throw new Error("That file isn't an Atlas backup.");
     const hasKeys = !!backup.hub?.settings?.keys && Object.keys(backup.hub.settings.keys).length > 0;
     const useKeys = hasKeys && confirm('This backup includes API keys. Load them too? (Cancel keeps your current keys.)');
     if (!confirm(`Load the backup from ${new Date(backup.createdAt).toLocaleString()}? It replaces your settings, look and notes${backup.computer ? ', and updates spaces & apps with the same names' : ''}.`)) return;
@@ -763,7 +785,7 @@ function appsPanel() {
   if (!d) return `<div class="label">Apps</div><p class="dim">Pair a computer first.</p>`;
   const sx = list.find(x => x.id === appsSpace) || list[0]; appsSpace = sx?.id;
   const a = sx?.apps;
-  if (!a) return `<div class="label">Apps on ${esc(d.name)}</div><p class="dim">${d.online ? 'Waiting for the computer…' : 'The computer is offline.'} Update Aura on it to choose apps.</p>`;
+  if (!a) return `<div class="label">Apps on ${esc(d.name)}</div><p class="dim">${d.online ? 'Waiting for the computer…' : 'The computer is offline.'} Update Atlas on it to choose apps.</p>`;
   const real = !!state.snapshot?.spaces;
   const spaceBar = real ? `<div class="spaces" style="margin:0 0 10px">${list.map(x => `<button class="space-chip ${x.id === sx.id ? 'on' : ''}" data-appspace="${esc(x.id)}">${x.private ? '🔒 ' : ''}${esc(x.name)}</button>`).join('')}</div>
     <div class="space-settings">
@@ -772,11 +794,11 @@ function appsPanel() {
         <button class="chip toggle" data-spaceprivate aria-pressed="${!!sx.private}"><span class="led"></span>Private</button>
         ${list.length > 1 ? '<button class="btn sm danger" data-spaceremove>Remove space</button>' : ''}
       </div>
-      <p class="dim" style="font-size:12px;margin:6px 0 0">${esc(sx.browser || 'Browser')} · ${sx.connected ? 'connected' : 'not connected'}. Private spaces are only shown, and only used by the assistant, when you pick them at the top of Now. To add a space, install Aura Bridge in another browser or browser profile.</p>
+      <p class="dim" style="font-size:12px;margin:6px 0 0">${esc(sx.browser || 'Browser')} · ${sx.connected ? 'connected' : 'not connected'}. Private spaces are only shown, and only used by the assistant, when you pick them at the top of Now. To add a space, install Atlas Bridge in another browser or browser profile.</p>
     </div>` : '';
   const sw = (id, name, on, sub) => `<div class="conn ${on ? 'ok' : 'off'}"><span class="cdot"></span><div class="cmain"><div class="cname">${esc(name)}</div>${sub ? `<div class="cdet">${esc(sub)}</div>` : ''}</div><button class="chip toggle" data-app="${esc(id)}" aria-pressed="${on}" ${d.online ? '' : 'disabled'}><span class="led"></span>${on ? 'On' : 'Off'}</button></div>`;
   return `<div class="panel-head"><span class="label">${real && list.length > 1 ? 'Spaces & apps' : 'Apps'} on ${esc(d.name)}</span></div>${spaceBar}
-    <p class="dim" style="font-size:13px;margin:0 0 6px">Choose what Aura uses${real && list.length > 1 ? ` in the ${esc(sx.name)} space` : ' on this computer'}. Off means not synced, not opened, and not read even when you ask.</p>
+    <p class="dim" style="font-size:13px;margin:0 0 6px">Choose what Atlas uses${real && list.length > 1 ? ` in the ${esc(sx.name)} space` : ' on this computer'}. Off means not synced, not opened, and not read even when you ask.</p>
     <div class="conn-group">On the dashboard</div>${a.list.filter(x => x.synced).map(x => sw(x.id, x.name, x.on) + (x.id === 'outlook' && x.on ? outlookLinks(a, d) : '')).join('')}
     <div class="conn-group">Read when you ask</div>${a.list.filter(x => !x.synced).map(x => sw(x.id, x.name, x.on)).join('')}
     ${sw('__other', 'Other websites', a.otherSites, 'Any site not listed above, open in the browser')}`;
@@ -806,7 +828,7 @@ $('#view-system').addEventListener('submit', async e => {
   e.preventDefault();
   try {
     await api('/api/action', { method: 'POST', body: { tool: 'set_apps', input: { space: appsSpace, outlookMailUrl: $('#ol-mail').value, outlookCalUrl: $('#ol-cal').value } } });
-    toast('Saved. Aura opens Outlook with these links within a minute.');
+    toast('Saved. Atlas opens Outlook with these links within a minute.');
     await new Promise(r => setTimeout(r, 500)); await refresh(true); $('#sec-apps').innerHTML = appsPanel(); loadConnections();
   } catch (err) { toast(err.message); }
 });
@@ -827,7 +849,7 @@ function networkPanel() {
   const toggle = `<button class="chip toggle" id="net-toggle" aria-pressed="${!!n.on}" ${n.canChange ? '' : 'disabled'}><span class="led"></span>${n.on ? 'On' : 'Off'}</button>`;
   const row = (u, big) => `<div class="url-row"><code class="${big ? 'big-url' : 'dim'}">${esc(u)}</code><button class="btn sm" data-copy="${esc(u)}">Copy</button></div>`;
   if (!n.on) return `<div class="panel-head"><span class="label">Other devices</span>${toggle}</div>
-    <p class="dim" style="font-size:13px;margin:0">${n.error ? `<span class="error">${esc(n.error)}</span><br>` : ''}Let phones and other computers on your Wi-Fi open Aura. They still need your PIN.${n.canChange ? '' : '<br><b>Turn this on from the computer that runs Aura.</b>'}</p>`;
+    <p class="dim" style="font-size:13px;margin:0">${n.error ? `<span class="error">${esc(n.error)}</span><br>` : ''}Let phones and other computers on your Wi-Fi open Atlas. They still need your PIN.${n.canChange ? '' : '<br><b>Turn this on from the computer that runs Atlas.</b>'}</p>`;
   return `<div class="panel-head"><span class="label">Other devices</span>${toggle}</div>
     ${n.secureUrls?.length ? `<p style="margin:0 0 4px"><b>With talking</b> (recommended), open on a phone on the same Wi-Fi:</p>${row(n.secureUrls[0], true)}
       <p class="dim" style="font-size:13px;margin:4px 0 12px">The first time, the phone says the connection isn't private, because the certificate comes from your own computer. iPhone: <b>Show Details → visit this website</b>. Android: <b>Advanced → Proceed</b>. After that the microphone works.</p>` : ''}
@@ -946,7 +968,7 @@ $('#view-system').addEventListener('click', async e => {
   if (t.id === 'test-voice') {
     unlockAudio();
     try { await saveSettings(); } catch {}
-    speaker.stop(); speaker.say('Hi, I\'m Aura. Your next meeting starts soon, and a couple of people are waiting on you. Want me to walk you through it?');
+    speaker.stop(); speaker.say('Hi, I\'m Atlas. Your next meeting starts soon, and a couple of people are waiting on you. Want me to walk you through it?');
   }
   if (t.id === 'load-audit') {
     const rows = await api('/api/audit');
@@ -1043,7 +1065,7 @@ $('#speak-toggle').addEventListener('click', () => { voiceOn = !voiceOn; if (!vo
 $('#hands-free').addEventListener('click', () => {
   handsFree = !handsFree; $('#hands-free').setAttribute('aria-pressed', handsFree);
   api('/api/settings', { method: 'POST', body: { handsFree } }).catch(() => {});
-  toast(handsFree ? 'Hands-free on: Aura listens again after each reply' : 'Hands-free off');
+  toast(handsFree ? 'Hands-free on: Atlas listens again after each reply' : 'Hands-free off');
   setOrb(orb.state);
   if (handsFree && !listening && !sending) startListening();
 });

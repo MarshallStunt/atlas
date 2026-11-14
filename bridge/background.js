@@ -1,5 +1,5 @@
-// Aura Bridge: every minute, read Gmail (unread), Google Calendar (agenda) and Slack (mentions)
-// using this Chrome's own sign-in, and hand the result to the Aura agent on this computer.
+// Atlas Bridge: every minute, read Gmail (unread), Google Calendar (agenda) and Slack (mentions)
+// using this Chrome's own sign-in, and hand the result to the Atlas agent on this computer.
 // It also waits for jobs from the agent (sending a Slack message the user approved on their phone).
 // No passwords or Slack tokens are stored: Slack calls run inside the open Slack tab.
 
@@ -15,7 +15,7 @@ function browserName() {
   return /Edge/.test(brands) ? 'Microsoft Edge' : /Opera/.test(brands) ? 'Opera' : 'Google Chrome';
 }
 // Every browser that loads this extension from the same folder gets the same extension ID, so each
-// install makes its own random ID; that's how Aura tells Chrome, Brave, Edge and profiles apart.
+// install makes its own random ID; that's how Atlas tells Chrome, Brave, Edge and profiles apart.
 async function installId() {
   let { installId: id } = await chrome.storage.local.get('installId');
   if (!id) { id = crypto.randomUUID(); await chrome.storage.local.set({ installId: id }); }
@@ -32,7 +32,7 @@ async function ensureToken() {
 }
 async function toAgent(path, opts = {}) {
   let s = await ensureToken();
-  const go = () => fetch(s.agent + path, { ...opts, headers: { 'Content-Type': 'application/json', 'X-Aura-Bridge': s.token, ...(opts.headers || {}) } });
+  const go = () => fetch(s.agent + path, { ...opts, headers: { 'Content-Type': 'application/json', 'X-Atlas-Bridge': s.token, ...(opts.headers || {}) } });
   let r = await go();
   if (r.status === 401) { await chrome.storage.local.remove('token'); s = await ensureToken(); r = await go(); } // agent was reinstalled
   return r;
@@ -46,8 +46,8 @@ async function fetchInPage(u) {
   } catch (e) { return { error: String(e.message || e) }; }
 }
 /* ---------- self-healing app tabs ----------
-   Each app Aura reads (Gmail, Calendar, Slack) needs a signed-in tab. If the user's own tab is gone,
-   Aura keeps its own pinned background tab; if Chrome put the tab to sleep or it crashed, Aura
+   Each app Atlas reads (Gmail, Calendar, Slack) needs a signed-in tab. If the user's own tab is gone,
+   Atlas keeps its own pinned background tab; if Chrome put the tab to sleep or it crashed, Atlas
    reloads it. Only a real sign-out needs the user, and that is reported as SIGN_IN. */
 const SIGN_IN_PAGE = /accounts\.google\.com|ServiceLogin|\/signin|slack\.com\/(signin|workspace-signin|checkcookie)/i;
 async function appTab(key, pattern, openUrl) {
@@ -109,8 +109,8 @@ async function gmail() {
 }
 
 /* ---------- Google Calendar: agenda view of the user's own calendar ---------- */
-/* ---------- Google Calendar: read from Aura's own pinned Calendar tab ----------
-   Google's old agenda feed now answers automated checks with an "unusual traffic" page, so Aura
+/* ---------- Google Calendar: read from Atlas's own pinned Calendar tab ----------
+   Google's old agenda feed now answers automated checks with an "unusual traffic" page, so Atlas
    reads the normal Calendar page (schedule view) instead. That page keeps itself up to date, so
    reading it every minute sends Google no extra requests; the tab is refreshed every 30 minutes. */
 const GOOGLE_SORRY = /google\.[a-z.]+\/sorry/i;
@@ -145,7 +145,7 @@ async function calendar(email) {
   const tab = await ownTab('Google Calendar', url);
   if (GOOGLE_SORRY.test(tab.url || '')) {
     await chrome.storage.local.set({ calendarPausedUntil: Date.now() + 30 * 60 * 1000 }); // back off; never try to get past the check
-    throw new Error('Google asked to confirm this is a person, so Aura paused calendar checks for 30 minutes');
+    throw new Error('Google asked to confirm this is a person, so Atlas paused calendar checks for 30 minutes');
   }
   if (SIGN_IN_PAGE.test(tab.url || '')) throw new Error(`SIGN_IN: you're signed out of Google Calendar${email ? ` (${email})` : ''}. Sign in once in the pinned Calendar tab.`);
   const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readGoogleCalendar });
@@ -243,7 +243,7 @@ async function slackInPage(job) {
     return { ok: false, error: String(e.message || e) };
   }
 }
-// People often use the Slack desktop app, so there may be no Slack tab: Aura keeps its own pinned one.
+// People often use the Slack desktop app, so there may be no Slack tab: Atlas keeps its own pinned one.
 async function slackTabRun(job) {
   const run = () => inAppTab('Slack', 'https://app.slack.com/*', 'https://app.slack.com/client', slackInPage, [job || null]);
   let { result, tab } = await run();
@@ -261,8 +261,8 @@ async function slackTabRun(job) {
   throw new Error(result?.error || 'the Slack tab did not answer; retrying next minute');
 }
 
-/* ---------- Outlook (Microsoft 365): read from Aura's own pinned Outlook tabs ----------
-   Outlook has no simple feed, so Aura keeps two pinned tabs (inbox and work-week calendar) and reads
+/* ---------- Outlook (Microsoft 365): read from Atlas's own pinned Outlook tabs ----------
+   Outlook has no simple feed, so Atlas keeps two pinned tabs (inbox and work-week calendar) and reads
    what Outlook shows, using its accessibility labels. Nothing is stored except what's sent to the agent. */
 const MS_SIGN_IN = /login\.microsoftonline\.com|login\.live\.com|login\.microsoft\.com|\/owa\/auth\/logon|\/auth\/logon\.aspx|\/adfs\/ls/i;
 // Is the tab still on the page we opened (mail vs calendar), including OWA's "#path=/mail" style links?
@@ -396,7 +396,7 @@ function sync() {
       ok = r.ok;
       if (ok) setConfig((await r.json().catch(() => ({}))).config);
       if (!ok) out.errors.agent = `agent said ${r.status}`;
-    } catch (e) { out.errors.agent = /fetch/i.test(e.message) ? 'the Aura agent is not running on this computer' : e.message; }
+    } catch (e) { out.errors.agent = /fetch/i.test(e.message) ? 'the Atlas agent is not running on this computer' : e.message; }
     // Per-app status for the popup and the icon badge.
     const st = (key, on, okText) => !on ? { state: 'off', text: 'Off for this space' } : out.errors[key] ? { state: /^SIGN_IN:/.test(out.errors[key]) ? 'signin' : 'warn', text: out.errors[key].replace(/^SIGN_IN:\s*/, '') } : out[key] ? { state: 'ok', text: okText(out[key]) } : { state: 'warn', text: 'No data yet' };
     const apps = {
@@ -411,8 +411,8 @@ function sync() {
   return syncing;
 }
 
-// When an app is turned off for this space, close the pinned tab Aura opened for it.
-// Only Aura's own tabs (remembered by ID) are closed; tabs you opened yourself are never touched.
+// When an app is turned off for this space, close the pinned tab Atlas opened for it.
+// Only Atlas's own tabs (remembered by ID) are closed; tabs you opened yourself are never touched.
 async function closeTurnedOffTabs(apps) {
   const { tabs = {}, ownTabs = {} } = await chrome.storage.local.get(['tabs', 'ownTabs']);
   const plan = [['gmail', tabs, 'Gmail'], ['gcal', tabs, 'Google Calendar'], ['gcal', ownTabs, 'Google Calendar'], ['slack', tabs, 'Slack'], ['outlook', ownTabs, 'Outlook mail'], ['outlook', ownTabs, 'Outlook calendar']];
@@ -431,10 +431,10 @@ function updateBadge(ok, apps) {
   const text = !ok ? '!' : bad.length ? String(bad.length) : '';
   chrome.action.setBadgeText({ text });
   chrome.action.setBadgeBackgroundColor({ color: !ok || bad.some(([, a]) => a.state === 'signin') ? '#f43f5e' : '#f59e0b' });
-  chrome.action.setTitle({ title: !ok ? 'Aura Bridge: not connected to Aura on this computer' : bad.length ? `Aura Bridge: ${bad.map(([n]) => n).join(', ')} need attention` : `Aura Bridge: connected${appConfig?.space ? ' · ' + appConfig.space : ''}` });
+  chrome.action.setTitle({ title: !ok ? 'Atlas Bridge: not connected to Atlas on this computer' : bad.length ? `Atlas Bridge: ${bad.map(([n]) => n).join(', ')} need attention` : `Atlas Bridge: connected${appConfig?.space ? ' · ' + appConfig.space : ''}` });
 }
 
-/* ---------- which apps this computer uses (set in Aura → System → Apps; sent by the agent) ---------- */
+/* ---------- which apps this computer uses (set in Atlas → System → Apps; sent by the agent) ---------- */
 let appConfig = null;
 chrome.storage.local.get('appConfig').then(r => { appConfig ||= r.appConfig || null; });
 function setConfig(c) {
@@ -443,7 +443,7 @@ function setConfig(c) {
   closeTurnedOffTabs(c.apps);
   maybeSelfUpdate(c.bridgeVersion);
 }
-// When Aura is updated, the installer writes the new extension files into this extension's folder;
+// When Atlas is updated, the installer writes the new extension files into this extension's folder;
 // reload once to start using them (no clicking reload in chrome://extensions).
 const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function maybeSelfUpdate(v) {
@@ -457,7 +457,7 @@ const appOn = id => appConfig?.apps?.[id] !== false;
 function allowedUrl(url) {
   if (!appConfig || !/^https?:\/\//i.test(url || '')) return { ok: true };
   const host = String(url).replace(/^https?:\/\//, '');
-  for (const [id, re] of Object.entries(appConfig.matchers || {})) if (new RegExp(re, 'i').test(host)) return appConfig.apps[id] === false ? { ok: false, why: `That app is turned off for this computer in Aura.` } : { ok: true };
+  for (const [id, re] of Object.entries(appConfig.matchers || {})) if (new RegExp(re, 'i').test(host)) return appConfig.apps[id] === false ? { ok: false, why: `That app is turned off for this computer in Atlas.` } : { ok: true };
   return appConfig.otherSites === false ? { ok: false, why: 'Only the apps chosen for this computer can be read.' } : { ok: true };
 }
 
@@ -481,7 +481,7 @@ function snapshotPage(find) {
   const visible = el => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none'; };
   const els = [...document.querySelectorAll('a[href],button,input,textarea,select,[role=button],[role=link],[role=textbox],[contenteditable=true],[role=tab],[role=menuitem],[role=option]')].filter(visible).slice(0, 150);
   const items = els.map((el, i) => {
-    el.setAttribute('data-aura-ref', String(i + 1));
+    el.setAttribute('data-atlas-ref', String(i + 1));
     const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.title || el.getAttribute('href') || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     const kind = el.matches('input,textarea,[role=textbox],[contenteditable=true]') ? 'field' : el.tagName === 'A' ? 'link' : 'button';
     return `[${i + 1}] ${kind}: ${label}`;
@@ -495,7 +495,7 @@ function snapshotPage(find) {
   return { title: document.title, url: location.href, text: text.slice(0, 16000), elements: items.join('\n').slice(0, 8000) };
 }
 function actInPage(ref, action, text) {
-  const el = document.querySelector(`[data-aura-ref="${CSS.escape(String(ref))}"]`);
+  const el = document.querySelector(`[data-atlas-ref="${CSS.escape(String(ref))}"]`);
   if (!el) return { ok: false, error: `No element [${ref}] — read the page again first.` };
   el.scrollIntoView({ block: 'center' });
   if (action === 'click') { el.click(); return { ok: true }; }

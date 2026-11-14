@@ -1,9 +1,9 @@
-# Aura hub, for company infrastructure. Put it behind the company's TLS proxy / zero-trust network;
+# Atlas hub, for company infrastructure. Put it behind the company's TLS proxy / zero-trust network;
 # it speaks plain HTTP inside the container. Each person's computer runs the agent, which dials out
 # to this hub, so the computers never accept incoming connections.
 FROM node:22-alpine
 WORKDIR /app
-ENV NODE_ENV=production AURA_SERVER=1 AURA_HOST=0.0.0.0 AURA_PORT=8100 AURA_HUB_DATA=/data
+ENV NODE_ENV=production ATLAS_SERVER=1 ATLAS_HOST=0.0.0.0 ATLAS_PORT=8100 ATLAS_HUB_DATA=/data
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY hub ./hub

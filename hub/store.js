@@ -1,9 +1,12 @@
-// Hub storage: small JSON files in ~/.aura-hub (owner-only permissions) and an append-only audit log.
+// Hub storage: small JSON files in ~/.atlas-hub (owner-only permissions) and an append-only audit log.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const DATA = process.env.AURA_HUB_DATA || path.join(os.homedir(), '.aura-hub');
+export const DATA = process.env.ATLAS_HUB_DATA || path.join(os.homedir(), '.atlas-hub');
+// Renamed from Aura: move the old data (PIN, keys, devices, notes) over the first time.
+const OLD = path.join(os.homedir(), '.aura-hub');
+if (!process.env.ATLAS_HUB_DATA && !fs.existsSync(DATA) && fs.existsSync(OLD)) fs.renameSync(OLD, DATA);
 fs.mkdirSync(DATA, { recursive: true, mode: 0o700 });
 
 const file = name => path.join(DATA, name);

@@ -1,6 +1,6 @@
 {
-  "name": "Aura",
-  "short_name": "Aura",
+  "name": "Atlas",
+  "short_name": "Atlas",
   "description": "Your work computer, from your phone",
   "start_url": "/",
   "display": "standalone",

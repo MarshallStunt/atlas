@@ -1,22 +1,25 @@
-# Aura one-step install for Windows. No admin rights, no Node.js or git needed beforehand.
+# Atlas one-step install for Windows. No admin rights, no Node.js or git needed beforehand.
 #
 #   One line (PowerShell):  irm https://raw.githubusercontent.com/MarshallStunt/aura/main/install.ps1 | iex
-#   Or double-click "Install Aura (Windows).cmd" in the Aura folder.
-#   To use a hub hosted elsewhere:  $env:AURA_HUB = "https://HUB"; then run the line above.
+#   Or double-click "Install Atlas (Windows).cmd" in the Atlas folder.
+#   To use a hub hosted elsewhere:  $env:ATLAS_HUB = "https://HUB"; then run the line above.
 #
 # It downloads Node.js from nodejs.org (checksum-verified) into your user folder if you don't have
-# Node 20+, gets Aura, pairs this PC (you type a code), and starts Aura at logon as YOU (not admin).
+# Node 20+, gets Atlas, pairs this PC (you type a code), and starts Atlas at logon as YOU (not admin).
 # (no param block: this script also runs through "irm | iex")
-$Hub = $env:AURA_HUB
+$Hub = $env:ATLAS_HUB
 for ($i = 0; $i -lt $args.Count; $i++) { if ($args[$i] -eq "-Hub") { $Hub = $args[$i + 1] } }
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # makes downloads much faster in Windows PowerShell
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$Home_ = Join-Path $env:LOCALAPPDATA "Aura"
+# Installs from before the rename (Aura) keep their folder, so the browser extension loaded from it keeps working.
+$Home_ = Join-Path $env:LOCALAPPDATA "Atlas"
+$OldHome = Join-Path $env:LOCALAPPDATA "Aura"
+if ((Test-Path $OldHome) -and -not (Test-Path $Home_)) { $Home_ = $OldHome }
 New-Item -ItemType Directory -Force -Path $Home_ | Out-Null
 function Say($m) { Write-Host "-> $m" -ForegroundColor Cyan }
-Write-Host "Aura installer (version 2026-11-14.4)" -ForegroundColor DarkGray
+Write-Host "Atlas installer (version 2026-11-14.4)" -ForegroundColor DarkGray
 
 # ---------- 1. Node.js (use yours if it's 20+, otherwise a private copy) ----------
 $node = $null
@@ -24,7 +27,7 @@ $sys = Get-Command node -ErrorAction SilentlyContinue
 if ($sys -and [int](& $sys.Source -p "process.versions.node.split('.')[0]") -ge 20) { $node = $sys.Source }
 # Reuse the private copy from a previous install instead of downloading it again.
 $private = Join-Path $Home_ "node\node.exe"
-if (-not $node -and (Test-Path $private)) { $node = $private; Say "Using Node.js already set up for Aura" }
+if (-not $node -and (Test-Path $private)) { $node = $private; Say "Using Node.js already set up for Atlas" }
 if ($node -and $node -ne $private) { Say "Using your Node.js ($node)" }
 if (-not $node) {
   $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
@@ -51,17 +54,20 @@ $env:Path = "$nodeDir;$env:Path"
 $npm = Join-Path $nodeDir "npm.cmd"
 if (-not (Test-Path $npm)) { $npm = "npm" }
 
-# Stop a running Aura before its files are replaced.
-Get-ScheduledTask -TaskName "Aura" -ErrorAction SilentlyContinue | Stop-ScheduledTask -ErrorAction SilentlyContinue
+# Stop a running Atlas before its files are replaced.
+Get-ScheduledTask -TaskName "Atlas" -ErrorAction SilentlyContinue | Stop-ScheduledTask -ErrorAction SilentlyContinue
+# The app used to be called Aura: stop and remove its old task and shortcuts.
+if (Get-ScheduledTask -TaskName "Aura" -ErrorAction SilentlyContinue) { Stop-ScheduledTask -TaskName "Aura" -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName "Aura" -Confirm:$false }
+foreach ($old in @((Join-Path ([Environment]::GetFolderPath("Desktop")) "Aura.lnk"), (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Aura.lnk"))) { Remove-Item $old -ErrorAction SilentlyContinue }
 
-# ---------- 2. Aura itself (this folder if run from it, otherwise download the latest) ----------
+# ---------- 2. Atlas itself (this folder if run from it, otherwise download the latest) ----------
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { "" }
 $reused = $false
 if ($here -and (Test-Path (Join-Path $here "package.json"))) { $Dir = $here }
 else {
   $Dir = Join-Path $Home_ "app"
-  Say $(if (Test-Path $Dir) { "Updating Aura to the latest version" } else { "Downloading Aura" })
-  $zip = Join-Path $Home_ "aura.zip"
+  Say $(if (Test-Path $Dir) { "Updating Atlas to the latest version" } else { "Downloading Atlas" })
+  $zip = Join-Path $Home_ "atlas.zip"
   Invoke-WebRequest "https://github.com/MarshallStunt/aura/archive/refs/heads/main.zip" -OutFile $zip -UseBasicParsing
   $tmp = Join-Path $Home_ "extract"
   if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
@@ -77,9 +83,9 @@ else {
   Remove-Item -Recurse -Force $tmp, $zip
 }
 Set-Location $Dir
-if ($reused) { Say "Aura's parts are up to date" }
+if ($reused) { Say "Atlas's parts are up to date" }
 else {
-  Say "Installing Aura's parts"
+  Say "Installing Atlas's parts"
   & $npm install --omit=dev --no-audit --no-fund --no-update-notifier --loglevel=error
   if ($LASTEXITCODE -ne 0) { throw "npm install failed." }
 }
@@ -87,13 +93,13 @@ else {
 # ---------- 3. Pair this PC ----------
 $hubProc = $null
 if (-not $Hub) {
-  $entry = Join-Path $Dir "start.js"; $Hub = "http://127.0.0.1:8100"; $name = "Aura (hub + agent)"
+  $entry = Join-Path $Dir "start.js"; $Hub = "http://127.0.0.1:8100"; $name = "Atlas (hub + agent)"
   $hubProc = Start-Process -FilePath $node -ArgumentList "`"$(Join-Path $Dir 'hub\server.js')`"" -PassThru -WindowStyle Hidden
   Start-Sleep 2
   Write-Host ""
-  Write-Host "  Your browser is opening Aura. Set a PIN there, go to System, and enter the code below." -ForegroundColor Yellow
+  Write-Host "  Your browser is opening Atlas. Set a PIN there, go to System, and enter the code below." -ForegroundColor Yellow
   Start-Process "http://127.0.0.1:8100"
-} else { $entry = Join-Path $Dir "agent\agent.js"; $name = "Aura agent" }
+} else { $entry = Join-Path $Dir "agent\agent.js"; $name = "Atlas agent" }
 
 & $node (Join-Path $Dir "agent\agent.js") "--hub=$Hub" --pair-only
 if ($hubProc) { Stop-Process -Id $hubProc.Id -ErrorAction SilentlyContinue }
@@ -103,20 +109,20 @@ $action = New-ScheduledTaskAction -Execute $node -Argument "`"$entry`"" -Working
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -Hidden
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-Register-ScheduledTask -TaskName "Aura" -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
-Start-ScheduledTask -TaskName "Aura"
+Register-ScheduledTask -TaskName "Atlas" -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+Start-ScheduledTask -TaskName "Atlas"
 
-# ---------- 5. Aura icon on the Desktop and in the Start menu (opens Aura in its own window) ----------
+# ---------- 5. Atlas icon on the Desktop and in the Start menu (opens Atlas in its own window) ----------
 $browserExe = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe", "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 $shell = New-Object -ComObject WScript.Shell
 foreach ($where in @([Environment]::GetFolderPath("Desktop"), (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"))) {
-  $lnk = $shell.CreateShortcut((Join-Path $where "Aura.lnk"))
+  $lnk = $shell.CreateShortcut((Join-Path $where "Atlas.lnk"))
   if ($browserExe) { $lnk.TargetPath = $browserExe; $lnk.Arguments = "--app=$Hub" } else { $lnk.TargetPath = $Hub }
-  $lnk.IconLocation = (Join-Path $Dir "assets\aura.ico")
-  $lnk.Description = "Aura: your work computer, by voice"
+  $lnk.IconLocation = (Join-Path $Dir "assets\atlas.ico")
+  $lnk.Description = "Atlas: your work computer, by voice"
   $lnk.Save()
 }
-Write-Host "OK  Aura icon added to your Desktop and Start menu" -ForegroundColor Green
+Write-Host "OK  Atlas icon added to your Desktop and Start menu" -ForegroundColor Green
 
 # ---------- 6. Browser extension ----------
 # It lives in its own folder that updates write into (never delete), so Chrome keeps it loaded,
@@ -138,7 +144,7 @@ Write-Host "  (If you added it before from another folder, remove that one first
 Write-Host "  1. In the Chrome/Edge tab that just opened, turn on Developer mode (top right)."
 Write-Host "  2. Click 'Load unpacked' and choose this folder (Explorer just opened it):"
 Write-Host "     $bridge"
-Write-Host "  It connects to Aura by itself. Open Aura any time at http://127.0.0.1:8100"
+Write-Host "  It connects to Atlas by itself. Open Atlas any time at http://127.0.0.1:8100"
 Start-Process explorer.exe $bridge
 $chrome = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe", "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($chrome) { Start-Process $chrome "chrome://extensions" } else { Start-Process "msedge" "edge://extensions" -ErrorAction SilentlyContinue }

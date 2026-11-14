@@ -6,7 +6,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { Readable } from 'node:stream';
 
-export const USER_AGENT = 'Aura-Hub/0.1 (server)';
+export const USER_AGENT = 'Atlas-Hub/0.1 (server)';
 const BROWSERISH = /^(origin|referer|cookie|accept-language|x-requested-with|anthropic-dangerous-direct-browser-access|sec-.*)$/i;
 const keepAlive = { http: new http.Agent({ keepAlive: true }), https: new https.Agent({ keepAlive: true }) };
 

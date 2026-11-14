@@ -12,10 +12,10 @@ const persist = () => save('auth.json', auth);
 
 export const hasPin = () => !!auth.pin;
 
-// Server mode (AURA_SERVER=1): the hub runs on company infrastructure behind a TLS proxy, so nobody
+// Server mode (ATLAS_SERVER=1): the hub runs on company infrastructure behind a TLS proxy, so nobody
 // is "at the computer". The first PIN then needs a one-time setup code printed in the hub's log.
-export const SERVER = process.env.AURA_SERVER === '1';
-const TRUST_PROXY = SERVER || process.env.AURA_TRUST_PROXY === '1';
+export const SERVER = process.env.ATLAS_SERVER === '1';
+const TRUST_PROXY = SERVER || process.env.ATLAS_TRUST_PROXY === '1';
 export const setupCode = SERVER && !auth.pin ? crypto.randomBytes(5).toString('hex').toUpperCase() : null;
 export function setupAllowed(req, code) {
   if (auth.pin) return false;
@@ -87,10 +87,10 @@ export function check(token) {
 
 export function cookieHeader(token, req, maxAgeDays = SESSION_DAYS) {
   const secure = req.headers['x-forwarded-proto'] === 'https' || req.socket.encrypted ? '; Secure' : '';
-  return `aura_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeDays * 86400}${secure}`;
+  return `atlas_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeDays * 86400}${secure}`;
 }
 
 export function tokenFrom(req) {
-  const m = String(req.headers.cookie || '').match(/(?:^|;\s*)aura_session=([^;]+)/);
+  const m = String(req.headers.cookie || '').match(/(?:^|;\s*)atlas_session=([^;]+)/);
   return m ? m[1] : null;
 }

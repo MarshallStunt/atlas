@@ -1,4 +1,4 @@
-// "Other devices" mode: also serve Aura on the local network so a phone or tablet on the same Wi-Fi
+// "Other devices" mode: also serve Atlas on the local network so a phone or tablet on the same Wi-Fi
 // can open it: plain HTTP on 8080, and HTTPS on 8443 for talking (browsers only allow the mic on HTTPS).
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
@@ -34,7 +34,7 @@ export async function certificate() {
   // New certificate when the network address changes (e.g. a different Wi-Fi).
   if (!fs.existsSync(certFile) || !fs.existsSync(meta) || fs.readFileSync(meta, 'utf8') !== want) {
     const notAfter = new Date(); notAfter.setDate(notAfter.getDate() + 825);
-    const pems = await selfsigned.generate([{ name: 'commonName', value: 'Aura' }], {
+    const pems = await selfsigned.generate([{ name: 'commonName', value: 'Atlas' }], {
       keySize: 2048, notAfterDate: notAfter,
       extensions: [
         { name: 'basicConstraints', cA: false, critical: true },

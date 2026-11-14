@@ -1,5 +1,5 @@
-// Aura agent: runs on the work computer as the signed-in user (never as root/admin).
-// - Pairs once with the hub and keeps an Ed25519 device key in ~/.aura-agent (owner-only).
+// Atlas agent: runs on the work computer as the signed-in user (never as root/admin).
+// - Pairs once with the hub and keeps an Ed25519 device key in ~/.atlas-agent (owner-only).
 // - Dials OUT to the hub over a WebSocket, so the computer never opens a port to the network.
 // - Checks its own local policy before every action, whatever the hub asks.
 // - Serves a local-only page (127.0.0.1:8101) where the person at the computer sets that policy,
@@ -14,8 +14,10 @@ import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { POLICY_DEFAULTS, TOOL_POLICY, status, makeTools, APPS, appOf, urlAllowed, matcherFor, cleanLink } from './capabilities.js';
 
-const DATA = process.env.AURA_AGENT_DATA || path.join(os.homedir(), '.aura-agent');
-const LOCAL_PORT = Number(process.env.AURA_AGENT_PORT || 8101);
+const DATA = process.env.ATLAS_AGENT_DATA || path.join(os.homedir(), '.atlas-agent');
+// Renamed from Aura: move the old data (pairing, spaces, choices) over the first time.
+if (!process.env.ATLAS_AGENT_DATA && !fs.existsSync(DATA) && fs.existsSync(path.join(os.homedir(), '.aura-agent'))) fs.renameSync(path.join(os.homedir(), '.aura-agent'), DATA);
+const LOCAL_PORT = Number(process.env.ATLAS_AGENT_PORT || 8101);
 fs.mkdirSync(DATA, { recursive: true, mode: 0o700 });
 const f = n => path.join(DATA, n);
 const readJson = (n, d) => { try { return JSON.parse(fs.readFileSync(f(n), 'utf8')); } catch { return d; } };
@@ -25,7 +27,7 @@ const audit = e => fs.appendFileSync(f('audit.jsonl'), JSON.stringify({ at: new 
 
 const argHub = process.argv.find(a => a.startsWith('--hub='))?.slice(6);
 let device = readJson('device.json', null);
-const hubUrl = (argHub || device?.hubUrl || process.env.AURA_HUB || 'http://127.0.0.1:8100').replace(/\/$/, '');
+const hubUrl = (argHub || device?.hubUrl || process.env.ATLAS_HUB || 'http://127.0.0.1:8100').replace(/\/$/, '');
 
 /* ---------------- local policy ---------------- */
 function policy() {
@@ -39,7 +41,7 @@ const allowed = key => policy()[key]?.on;
    Gmail never overwrites a work one, and actions go to the browser they belong to. */
 const CORE = { gmail: 'gmail', calendar: 'gcal', slack: 'slack', outlook: 'outlook' }; // inbox key -> app id
 // The extension version shipped with this agent; the extension reloads itself when it's older.
-// Read fresh each time, so a new extension on disk is noticed without restarting Aura.
+// Read fresh each time, so a new extension on disk is noticed without restarting Atlas.
 const bridgeVersion = () => { try { return JSON.parse(fs.readFileSync(path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'bridge', 'manifest.json'), 'utf8')).version; } catch { return null; } };
 const sp = (id, n) => path.join('spaces', id, n);
 fs.mkdirSync(f('spaces'), { recursive: true, mode: 0o700 });
@@ -93,7 +95,7 @@ function browser(kind, input = {}) {
   const ch = appChoices(s.id);
   if (kind === 'read' && rest.url) { const v = urlAllowed(rest.url, ch); if (!v.ok) return Promise.reject(new Error(v.reason)); }
   if (kind === 'slack_send' && ch.apps.slack === false) return Promise.reject(new Error(`Slack is turned off for the ${s.name} space (System → Apps).`));
-  if (!connectedNow(s)) return Promise.reject(new Error(`The ${s.name} browser (${s.browser}) isn't connected. Open it with the Aura Bridge extension installed.`));
+  if (!connectedNow(s)) return Promise.reject(new Error(`The ${s.name} browser (${s.browser}) isn't connected. Open it with the Atlas Bridge extension installed.`));
   const job = { id: crypto.randomUUID(), kind, input: rest };
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { jobWaiters.delete(job.id); reject(new Error(`The ${s.name} browser didn't answer in time.`)); }, 60000);
@@ -123,7 +125,13 @@ function overviewSpace(id) {
     errors: Object.fromEntries(Object.entries(inbox.errors || {}).filter(([k]) => !CORE[k] || on(k))),
   };
 }
-const extFolder = process.platform === 'win32' ? path.join(process.env.LOCALAPPDATA || os.homedir(), 'Aura', 'extension') : path.join(os.homedir(), '.aura', 'extension');
+// Where the installer keeps the extension. Installs from before the rename keep their old folder, so
+// browsers that loaded the extension from there keep working.
+const extFolder = (() => {
+  const base = process.platform === 'win32' ? (process.env.LOCALAPPDATA || os.homedir()) : os.homedir();
+  const [neu, old] = process.platform === 'win32' ? [path.join(base, 'Atlas'), path.join(base, 'Aura')] : [path.join(base, '.atlas'), path.join(base, '.aura')];
+  return path.join(fs.existsSync(path.join(old, 'extension')) && !fs.existsSync(path.join(neu, 'extension')) ? old : neu, 'extension');
+})();
 function spaceSummary(s) {
   const r = R(s.id), ch = appChoices(s.id);
   return {
@@ -160,7 +168,7 @@ function browserRunning(app) {
 }
 function launchBrowser(s, reason) {
   const r = R(s.id);
-  if (browserRunning(s.browser)) return { launched: false, note: `${s.browser} (${s.name}) is open but its Aura extension isn't answering. Reload Aura Bridge there, or load it from ${extFolder}.` };
+  if (browserRunning(s.browser)) return { launched: false, note: `${s.browser} (${s.name}) is open but its Atlas extension isn't answering. Reload Atlas Bridge there, or load it from ${extFolder}.` };
   if (Date.now() - r.lastLaunch < 10 * 60 * 1000) return { launched: false, note: `Started ${s.browser} a few minutes ago; waiting for it.` };
   r.lastLaunch = Date.now();
   const exe = { 'Google Chrome': ['chrome', 'google-chrome'], 'Microsoft Edge': ['msedge', 'microsoft-edge'], 'Brave Browser': ['brave', 'brave-browser'], Opera: ['opera', 'opera'] }[s.browser] || ['chrome', 'google-chrome'];
@@ -267,7 +275,7 @@ async function handleCall({ id, tool, input }) {
   const key = TOOL_POLICY[tool];
   let reply;
   if (!key || !tools[tool]) reply = { ok: false, error: `Unknown action ${tool}.` };
-  else if (!allowed(key)) reply = { ok: false, error: `"${POLICY_DEFAULTS[key].label}" is switched off on this computer. It can be turned on from the Aura agent page on the computer (http://127.0.0.1:${LOCAL_PORT}).` };
+  else if (!allowed(key)) reply = { ok: false, error: `"${POLICY_DEFAULTS[key].label}" is switched off on this computer. It can be turned on from the Atlas agent page on the computer (http://127.0.0.1:${LOCAL_PORT}).` };
   else {
     try { reply = { ok: true, result: await tools[tool](input || {}) }; }
     catch (e) { reply = { ok: false, error: String(e.message || e) }; }
@@ -285,7 +293,7 @@ async function pair() {
   const r = await fetch(hubUrl + '/agent/pair/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publicKey: pub, name, platform: process.platform }) });
   if (!r.ok) throw new Error('Hub refused pairing: ' + await r.text());
   const { requestId, code, expiresIn } = await r.json();
-  console.log(`\n  Pair this computer: open Aura on your phone → System → Pair, and enter\n\n        ${code}\n\n  (expires in ${Math.round(expiresIn / 60)} minutes)\n`);
+  console.log(`\n  Pair this computer: open Atlas on your phone → System → Pair, and enter\n\n        ${code}\n\n  (expires in ${Math.round(expiresIn / 60)} minutes)\n`);
   pairingCode = code;
   for (;;) {
     await new Promise(res => setTimeout(res, 2000));
@@ -310,7 +318,7 @@ function connect() {
   ws.on('message', async raw => {
     let msg; try { msg = JSON.parse(raw); } catch { return; }
     if (msg.type === 'challenge') {
-      const sig = crypto.sign(null, Buffer.from(`aura:${device.deviceId}:${msg.nonce}`), crypto.createPrivateKey(device.privateKey)).toString('base64');
+      const sig = crypto.sign(null, Buffer.from(`atlas:${device.deviceId}:${msg.nonce}`), crypto.createPrivateKey(device.privateKey)).toString('base64');
       ws.send(JSON.stringify({ type: 'auth', sig }));
     } else if (msg.type === 'welcome') {
       connected = true; backoff = 1000; log(`Connected to hub ${hubUrl} as ${msg.name}.`);
@@ -355,21 +363,21 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 
 function page() {
   const p = policy();
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aura agent</title>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Atlas agent</title>
 <style>:root{color-scheme:light dark;--bg:#0b0d12;--card:#141821;--line:#262c39;--text:#e8ecf3;--dim:#8b93a7;--accent:#5eead4}
 @media (prefers-color-scheme:light){:root{--bg:#f5f6f8;--card:#fff;--line:#e1e4ea;--text:#141821;--dim:#5b6475;--accent:#0f9488}}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,system-ui,sans-serif}main{max-width:640px;margin:0 auto;padding:24px 16px}
 h1{font-size:20px;margin:0 0 4px}.dim{color:var(--dim)}.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin:16px 0}
 label{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line)}label:first-of-type{border-top:0}input{margin-top:4px;width:18px;height:18px;accent-color:var(--accent)}
 code{background:var(--bg);padding:2px 6px;border-radius:6px;word-break:break-all}.ok{color:var(--accent)}.code{font:600 28px ui-monospace,monospace;letter-spacing:.1em}</style></head><body><main>
-<h1>Aura agent on ${esc(os.hostname())}</h1><div class="dim">This page only opens on this computer. Switches here can't be changed from the phone.</div>
+<h1>Atlas agent on ${esc(os.hostname())}</h1><div class="dim">This page only opens on this computer. Switches here can't be changed from the phone.</div>
 <div class="card"><b>Hub:</b> ${esc(hubUrl)} — ${device ? (connected ? '<span class="ok">connected</span>' : 'not connected') : pairingCode ? `waiting to pair. Enter this code on your phone:<div class="code">${pairingCode}</div>` : 'not paired'}</div>
-<div class="card"><b>What Aura may do on this computer</b>
+<div class="card"><b>What Atlas may do on this computer</b>
 <form id="f">${Object.entries(p).map(([k, v]) => `<label><input type="checkbox" name="${k}" ${v.on ? 'checked' : ''}><span><b>${esc(v.label)}</b><br><span class="dim">${esc(v.detail)}</span></span></label>`).join('')}</form>
 <div id="saved" class="dim"></div></div>
 <div class="card"><b>Browsers (spaces)</b>
 ${spaces.list.map(sx => { const r = R(sx.id); const ib = overviewSpace(sx.id); return `<p><b>${esc(sx.name)}</b>${sx.private ? ' (private)' : ''} · ${esc(sx.browser)} — ${connectedNow(sx) ? '<span class="ok">connected</span>' : 'not connected'}${r.inbox ? ` <span class="dim">(last update ${esc(new Date(r.inbox.receivedAt).toLocaleTimeString())})</span>` : ''}</p>${Object.entries(ib.errors || {}).map(([k, v]) => `<p class="dim">${esc(k)}: ${esc(v)}</p>`).join('')}`; }).join('')}
-<p class="dim">Add a space by installing the Aura Bridge extension in another browser or browser profile (load it from <code>${esc(extFolder)}</code>). It connects by itself as a new space you can rename in Aura.</p></div>
+<p class="dim">Add a space by installing the Atlas Bridge extension in another browser or browser profile (load it from <code>${esc(extFolder)}</code>). It connects by itself as a new space you can rename in Atlas.</p></div>
 <script>document.getElementById('f').addEventListener('change',async()=>{const fd=new FormData(document.getElementById('f'));const body={};${JSON.stringify(Object.keys(p))}.forEach(k=>body[k]=fd.has(k));
 const r=await fetch('/policy',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':${JSON.stringify(csrf)}},body:JSON.stringify(body)});document.getElementById('saved').textContent=r.ok?'Saved.':'Could not save.';});</script>
 </main></body></html>`;
@@ -391,7 +399,10 @@ const local = http.createServer(async (req, res) => {
       // loads it from the same folder). A space from before install IDs can only be claimed by the same
       // kind of browser it came from; anything else becomes a new space.
       const iid = /^[0-9a-f-]{36}$/i.test(b.installId || '') ? b.installId : null;
-      let s = (iid && spaces.list.find(x => x.installId === iid)) || spaces.list.find(x => !x.installId && !x.claimed && x.browser === browserName);
+      let s = (iid && spaces.list.find(x => x.installId === iid)) || spaces.list.find(x => !x.installId && !x.claimed && x.browser === browserName)
+        // A reinstalled extension (new folder or reloaded) gets a new install ID: reattach it to its browser's
+        // existing space if that space isn't connected right now, instead of making a duplicate.
+        || spaces.list.find(x => x.browser === browserName && !connectedNow(x) && spaces.list.filter(y => y.browser === browserName).length === 1);
       if (!s) {
         const base = browserName.replace(/^Google /, '').replace(/^Microsoft /, '').replace(/ Browser$/, '');
         let name = base, n = 2; while (spaces.list.some(x => x.name.toLowerCase() === name.toLowerCase())) name = `${base} ${n++}`;
@@ -406,7 +417,7 @@ const local = http.createServer(async (req, res) => {
       return json(res, 200, { token: s.token, space: s.name });
     }
     if (isBridge) {
-      const given = String(req.headers['x-aura-bridge'] || '');
+      const given = String(req.headers['x-atlas-bridge'] || req.headers['x-aura-bridge'] || ''); // older extensions send the old name until they update
       const s = spaces.list.find(x => x.token.length === given.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(x.token)));
       if (!s) return json(res, 401, { error: 'bad bridge token' });
       const r = R(s.id);

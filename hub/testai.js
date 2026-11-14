@@ -38,7 +38,7 @@ export async function testAI({ provider, model, parts = ['chat', 'voice', 'liste
     const engine = voice.voiceEngine(s);
     if (engine === 'browser') results.push({ part: 'Voice (speaking)', target: 'phone voice', ok: false, ms: 0, error: 'No ElevenLabs or OpenAI key saved, so the phone\'s basic voice is used.' });
     else {
-      const r = await timed(async () => { const out = await voice.synthesize('Aura voice check. Everything sounds good.'); audio = out; return { detail: `${Math.round(out.audio.length / 1024)} KB of audio` }; });
+      const r = await timed(async () => { const out = await voice.synthesize('Atlas voice check. Everything sounds good.'); audio = out; return { detail: `${Math.round(out.audio.length / 1024)} KB of audio` }; });
       results.push({ part: 'Voice (speaking)', target: engine === 'openai' ? 'OpenAI gpt-4o-mini-tts' : 'ElevenLabs', host: engine === 'openai' ? 'api.openai.com' : 'api.elevenlabs.io', ...r });
     }
   }
@@ -46,7 +46,7 @@ export async function testAI({ provider, model, parts = ['chat', 'voice', 'liste
     if (voice.sttEngine(s) !== 'openai') results.push({ part: 'Voice (listening)', target: 'browser', ok: false, ms: 0, error: 'No OpenAI key saved, so the browser\'s own speech recognition is used.' });
     else {
       const r = await timed(async () => {
-        const clip = audio || await voice.synthesize('Aura voice check. Everything sounds good.').catch(() => null);
+        const clip = audio || await voice.synthesize('Atlas voice check. Everything sounds good.').catch(() => null);
         if (!clip) throw new Error('Needs a voice key to make a test recording.');
         const text = await voice.transcribe(clip.audio, clip.type);
         return { detail: `Heard "${text.slice(0, 60)}"` };

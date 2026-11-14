@@ -1,4 +1,4 @@
-// Aura hub: serves the phone UI, signs you in, keeps the device registry, holds the live link
+// Atlas hub: serves the phone UI, signs you in, keeps the device registry, holds the live link
 // to each computer's agent, runs the assistant, and writes the audit log.
 import http from 'node:http';
 import https from 'node:https';
@@ -14,8 +14,8 @@ import { connections } from './connections.js';
 import { testAI } from './testai.js';
 import { audit, recentAudit, DATA } from './store.js';
 
-const PORT = Number(process.env.AURA_PORT || 8100);
-const HOST = process.env.AURA_HOST || '127.0.0.1'; // reach it from the phone through Tailscale Serve, not by opening the port
+const PORT = Number(process.env.ATLAS_PORT || 8100);
+const HOST = process.env.ATLAS_HOST || '127.0.0.1'; // reach it from the phone through Tailscale Serve, not by opening the port
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.json': 'application/json' };
 
@@ -69,7 +69,7 @@ function sameOrigin(req) {
     const o = new URL(origin);
     if (o.host === req.headers.host || o.host === req.headers['x-forwarded-host']) return true;
     // Tailscale Serve may forward with Host set to the local address; accept this machine's own tailnet name.
-    const tsName = process.env.AURA_TAILNET_HOST;
+    const tsName = process.env.ATLAS_TAILNET_HOST;
     return !!tsName && o.host === tsName;
   } catch { return false; }
 }
@@ -152,7 +152,7 @@ async function handler(req, res) {
     }
     if (p === '/api/network' && req.method === 'POST') {
       // Only someone at this computer may open it to the network.
-      if (!auth.isDirectLocal(req)) return send(res, 403, { error: 'Turn this on from the computer itself (open Aura there).' });
+      if (!auth.isDirectLocal(req)) return send(res, 403, { error: 'Turn this on from the computer itself (open Atlas there).' });
       const { on } = await readBody(req);
       brain.setSettings({ lan: !!on });
       audit({ who: 'me', event: on ? 'network.on' : 'network.off' });
@@ -166,11 +166,11 @@ async function handler(req, res) {
       let computer = null;
       try { computer = await devices.callDevice(devices.selectedId(), 'get_config', {}); } catch {}
       audit({ who: 'me', event: 'backup.saved', withKeys });
-      return send(res, 200, { type: 'aura-backup', version: 1, createdAt: new Date().toISOString(), hub: { settings: { ...settings, ...(withKeys ? { keys: keys || {} } : {}) }, notes: brain.notes() }, computer });
+      return send(res, 200, { type: 'atlas-backup', version: 1, createdAt: new Date().toISOString(), hub: { settings: { ...settings, ...(withKeys ? { keys: keys || {} } : {}) }, notes: brain.notes() }, computer });
     }
     if (p === '/api/restore' && req.method === 'POST') {
       const { backup: b, keys: useKeys } = await readBody(req, 2 * 1024 * 1024);
-      if (b?.type !== 'aura-backup') return send(res, 400, { error: "That file isn't an Aura backup." });
+      if (b?.type !== 'atlas-backup') return send(res, 400, { error: "That file isn't an Atlas backup." });
       const st = b.hub?.settings || {};
       const pick = ['provider', 'model', 'effort', 'voiceReplies', 'voiceEngine', 'voice', 'handsFree', 'ui'].reduce((o, k) => (k in st ? { ...o, [k]: st[k] } : o), {});
       if (useKeys && st.keys && typeof st.keys === 'object') pick.keys = st.keys;
@@ -239,16 +239,16 @@ function friendly(e) {
 const server = http.createServer(handler);
 devices.attach(server);
 server.listen(PORT, HOST, () => {
-  console.log(`Aura hub on http://${HOST}:${PORT}  (data in ${DATA})`);
-  if (!auth.hasPin()) console.log(auth.SERVER ? `First run: open Aura and set your PIN with setup code ${auth.setupCode}` : `First run: open http://127.0.0.1:${PORT} on this computer to set your PIN.`);
+  console.log(`Atlas hub on http://${HOST}:${PORT}  (data in ${DATA})`);
+  if (!auth.hasPin()) console.log(auth.SERVER ? `First run: open Atlas and set your PIN with setup code ${auth.setupCode}` : `First run: open http://127.0.0.1:${PORT} on this computer to set your PIN.`);
 });
 
-// ---------- Other devices: Aura on the local network ----------
-// Off by default. Turned on from the computer itself (System → Other devices) or with AURA_LAN=1.
+// ---------- Other devices: Atlas on the local network ----------
+// Off by default. Turned on from the computer itself (System → Other devices) or with ATLAS_LAN=1.
 // Plain HTTP on 8080, plus HTTPS on 8443 so the microphone works on phones (one-time warning there).
 // Sign-in still needs the PIN, and the first PIN can still only be set at this computer.
-const LAN_PORT = Number(process.env.AURA_LAN_PORT || 8080);
-const LAN_TLS_PORT = Number(process.env.AURA_LAN_TLS_PORT || 8443);
+const LAN_PORT = Number(process.env.ATLAS_LAN_PORT || 8080);
+const LAN_TLS_PORT = Number(process.env.ATLAS_LAN_TLS_PORT || 8443);
 let lan = [], lanInfo = null, lanError = null;
 const listen = (srv, port) => new Promise((resolve, reject) => { srv.once('error', reject); srv.listen(port, '0.0.0.0', resolve); });
 async function setLan(on) {
@@ -268,8 +268,8 @@ async function setLan(on) {
     await listen(secure, LAN_TLS_PORT); lan.push(secure);
     info.secureUrls = hosts.map(h => `https://${h}:${LAN_TLS_PORT}`);
   } catch (e) { lanError ||= e.code === 'EADDRINUSE' ? `Port ${LAN_TLS_PORT} is already used by another program.` : `Secure address unavailable: ${e.message}`; }
-  if (lan.length) { lanInfo = info; console.log(`Other devices can open Aura at: ${[...info.secureUrls, ...info.urls].join('  ')}`); }
+  if (lan.length) { lanInfo = info; console.log(`Other devices can open Atlas at: ${[...info.secureUrls, ...info.urls].join('  ')}`); }
   if (lanError) console.error('Network access:', lanError);
 }
 const network = () => ({ on: lan.length > 0, ...(lanInfo || {}), error: lanError });
-setLan(process.env.AURA_LAN === '1' || !!brain.getSettings().lan);
+setLan(process.env.ATLAS_LAN === '1' || !!brain.getSettings().lan);

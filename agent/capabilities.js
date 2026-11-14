@@ -131,13 +131,13 @@ async function openUrl(u) {
 async function notify(message) {
   const text = String(message).replace(/[\r\n]+/g, ' ').slice(0, 240);
   let r;
-  if (MAC) r = await run('osascript', ['-e', 'on run argv', '-e', 'display notification (item 1 of argv) with title "Aura"', '-e', 'end run', text]);
+  if (MAC) r = await run('osascript', ['-e', 'on run argv', '-e', 'display notification (item 1 of argv) with title "Atlas"', '-e', 'end run', text]);
   else if (WIN) {
     // The text goes in through an environment variable, never into the script source.
     r = await new Promise(resolve => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-      'Add-Type -AssemblyName System.Windows.Forms; $n=New-Object System.Windows.Forms.NotifyIcon; $n.Icon=[System.Drawing.SystemIcons]::Information; $n.Visible=$true; $n.ShowBalloonTip(8000,"Aura",$env:AURA_MSG,"Info"); Start-Sleep 9; $n.Dispose()'],
-      { env: { ...process.env, AURA_MSG: text }, timeout: 15000, windowsHide: true }, err => resolve({ ok: !err, stderr: String(err?.message || '') })));
-  } else r = await run('notify-send', ['Aura', text]);
+      'Add-Type -AssemblyName System.Windows.Forms; $n=New-Object System.Windows.Forms.NotifyIcon; $n.Icon=[System.Drawing.SystemIcons]::Information; $n.Visible=$true; $n.ShowBalloonTip(8000,"Atlas",$env:ATLAS_MSG,"Info"); Start-Sleep 9; $n.Dispose()'],
+      { env: { ...process.env, ATLAS_MSG: text }, timeout: 15000, windowsHide: true }, err => resolve({ ok: !err, stderr: String(err?.message || '') })));
+  } else r = await run('notify-send', ['Atlas', text]);
   if (!r.ok) throw new Error('Notification failed. ' + (r.missing ? 'Install notify-send.' : r.stderr.slice(0, 200)));
   return { ok: true };
 }
@@ -152,7 +152,7 @@ async function lock() {
 }
 
 async function screenshot() {
-  const raw = path.join(os.tmpdir(), `aura-shot-${process.pid}-${Date.now()}.${WIN || LINUX ? 'png' : 'jpg'}`);
+  const raw = path.join(os.tmpdir(), `atlas-shot-${process.pid}-${Date.now()}.${WIN || LINUX ? 'png' : 'jpg'}`);
   const out = raw.replace(/\.png$/, '.jpg');
   const fail = hint => { throw new Error('Screenshot failed. ' + hint); };
   try {
@@ -175,13 +175,13 @@ async function screenshot() {
         '$enc = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq "image/jpeg" }',
         '$p = New-Object System.Drawing.Imaging.EncoderParameters(1)',
         '$p.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]70)',
-        '$small.Save($env:AURA_OUT, $enc, $p)',
+        '$small.Save($env:ATLAS_OUT, $enc, $p)',
         '$g.Dispose(); $bmp.Dispose(); $small.Dispose()',
       ].join('; ');
       const r = await new Promise(resolve => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
-        { env: { ...process.env, AURA_OUT: out }, timeout: 25000, windowsHide: true }, (err, stdout, stderr) => resolve({ ok: !err, err: String(stderr || err?.message || '').trim() })));
+        { env: { ...process.env, ATLAS_OUT: out }, timeout: 25000, windowsHide: true }, (err, stdout, stderr) => resolve({ ok: !err, err: String(stderr || err?.message || '').trim() })));
       if (!r.ok || !fs.existsSync(out)) {
-        const why = /CopyFromScreen|handle is invalid|desktop/i.test(r.err) ? 'Windows has no screen to capture right now (locked, asleep, or Aura is running outside your desktop session).' : r.err.split('\n').slice(0, 3).join(' ').slice(0, 300);
+        const why = /CopyFromScreen|handle is invalid|desktop/i.test(r.err) ? 'Windows has no screen to capture right now (locked, asleep, or Atlas is running outside your desktop session).' : r.err.split('\n').slice(0, 3).join(' ').slice(0, 300);
         fail(why || 'PowerShell could not capture the screen.');
       }
       return shotResult(out);
@@ -227,7 +227,7 @@ export function makeTools({ overview, browser }) {
   };
 }
 
-/* ---------------- which apps Aura uses on this computer ----------------
+/* ---------------- which apps Atlas uses on this computer ----------------
    Computers differ (Gmail here, Outlook there). "synced" apps feed the dashboard; the rest are read
    only when you ask. Turned-off apps are not synced, not opened, not read and not acted in. */
 export const APPS = [
@@ -262,6 +262,6 @@ export function cleanLink(v) {
 export function urlAllowed(url, choices) {
   if (!/^https?:\/\//i.test(String(url || ''))) return { ok: true };
   const app = appOf(url, choices);
-  if (app) return choices.apps[app.id] === false ? { ok: false, app, reason: `${app.name} is turned off for this computer in Aura (System → Apps).` } : { ok: true, app };
+  if (app) return choices.apps[app.id] === false ? { ok: false, app, reason: `${app.name} is turned off for this computer in Atlas (System → Apps).` } : { ok: true, app };
   return choices.otherSites === false ? { ok: false, reason: 'Only the apps chosen for this computer can be read (System → Apps → Other websites is off).' } : { ok: true };
 }
