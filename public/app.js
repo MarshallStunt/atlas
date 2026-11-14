@@ -637,11 +637,15 @@ async function reconnectAll(btn) {
 function networkPanel() {
   const n = state.network || {};
   const toggle = `<button class="chip toggle" id="net-toggle" aria-pressed="${!!n.on}" ${n.canChange ? '' : 'disabled'}><span class="led"></span>${n.on ? 'On' : 'Off'}</button>`;
+  const row = (u, big) => `<div class="url-row"><code class="${big ? 'big-url' : 'dim'}">${esc(u)}</code><button class="btn sm" data-copy="${esc(u)}">Copy</button></div>`;
+  if (!n.on) return `<div class="panel-head"><span class="label">Other devices</span>${toggle}</div>
+    <p class="dim" style="font-size:13px;margin:0">${n.error ? `<span class="error">${esc(n.error)}</span><br>` : ''}Let phones and other computers on your Wi-Fi open Aura. They still need your PIN.${n.canChange ? '' : '<br><b>Turn this on from the computer that runs Aura.</b>'}</p>`;
   return `<div class="panel-head"><span class="label">Other devices</span>${toggle}</div>
-    ${n.on ? `<p style="margin:0 0 8px">On a phone, tablet or laptop on the <b>same Wi-Fi</b>, open:</p>
-      ${(n.urls || []).map((u, i) => `<div class="url-row"><code class="${i ? 'dim' : 'big-url'}">${esc(u)}</code><button class="btn sm" data-copy="${esc(u)}">Copy</button></div>`).join('')}
-      <p class="dim" style="font-size:13px">Sign in with your PIN. Over plain http, browsers block the microphone, so on other devices you type to Aura. Its replies are still spoken.</p>`
-    : `<p class="dim" style="font-size:13px;margin:0">${n.error ? `<span class="error">${esc(n.error)}</span><br>` : ''}Let phones and other computers on your Wi-Fi open Aura. They still need your PIN.${n.canChange ? '' : '<br><b>Turn this on from the computer that runs Aura.</b>'}</p>`}`;
+    ${n.secureUrls?.length ? `<p style="margin:0 0 4px"><b>With talking</b> (recommended), open on a phone on the same Wi-Fi:</p>${row(n.secureUrls[0], true)}
+      <p class="dim" style="font-size:13px;margin:4px 0 12px">The first time, the phone says the connection isn't private, because the certificate comes from your own computer. iPhone: <b>Show Details → visit this website</b>. Android: <b>Advanced → Proceed</b>. After that the microphone works.</p>` : ''}
+    ${n.urls?.length ? `<p style="margin:0 0 4px">Without talking (no warning):</p>${row(n.urls[0], !n.secureUrls?.length)}` : ''}
+    ${n.error ? `<p class="error" style="font-size:13px">${esc(n.error)}</p>` : ''}
+    <details class="sent"><summary class="mono">Other addresses</summary>${[...(n.secureUrls || []).slice(1), ...(n.urls || []).slice(1)].map(u => row(u)).join('') || '<p class="dim">None.</p>'}</details>`;
 }
 $('#view-system').addEventListener('click', async e => {
   const c = e.target.closest('[data-copy]');

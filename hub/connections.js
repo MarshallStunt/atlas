@@ -92,7 +92,7 @@ export function connections(net = {}) {
 
   // ---- reach ----
   if (SERVER) add('Access', 'Other devices', 'ok', 'Hub is hosted; open it from any signed-in device.');
-  else if (net.on) add('Access', 'Other devices', 'ok', `Open ${net.urls?.[0] || 'this computer\'s address'} on a phone or tablet on the same Wi-Fi.`);
+  else if (net.on) add('Access', 'Other devices', 'ok', `On your Wi-Fi: ${net.secureUrls?.[0] || net.urls?.[0]} (talking works on the https address).`);
   else if (net.error) add('Access', 'Other devices', 'error', net.error, goto('Open settings', 'network'));
   else add('Access', 'Other devices', 'off', 'Only this computer can open Aura.', goto('Turn on', 'network'));
 

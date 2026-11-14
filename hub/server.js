@@ -1,7 +1,8 @@
 // Aura hub: serves the phone UI, signs you in, keeps the device registry, holds the live link
 // to each computer's agent, runs the assistant, and writes the audit log.
 import http from 'node:http';
-import { lanAddresses, localName } from './lan.js';
+import https from 'node:https';
+import { lanAddresses, localName, certificate } from './lan.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -220,26 +221,33 @@ server.listen(PORT, HOST, () => {
   if (!auth.hasPin()) console.log(auth.SERVER ? `First run: open Aura and set your PIN with setup code ${auth.setupCode}` : `First run: open http://127.0.0.1:${PORT} on this computer to set your PIN.`);
 });
 
-// ---------- Other devices: Aura on the local network (plain HTTP) ----------
+// ---------- Other devices: Aura on the local network ----------
 // Off by default. Turned on from the computer itself (System → Other devices) or with AURA_LAN=1.
+// Plain HTTP on 8080, plus HTTPS on 8443 so the microphone works on phones (one-time warning there).
 // Sign-in still needs the PIN, and the first PIN can still only be set at this computer.
 const LAN_PORT = Number(process.env.AURA_LAN_PORT || 8080);
-let lan = null, lanInfo = null, lanError = null;
+const LAN_TLS_PORT = Number(process.env.AURA_LAN_TLS_PORT || 8443);
+let lan = [], lanInfo = null, lanError = null;
+const listen = (srv, port) => new Promise((resolve, reject) => { srv.once('error', reject); srv.listen(port, '0.0.0.0', resolve); });
 async function setLan(on) {
-  if (lan) { lan.close(); lan.closeAllConnections?.(); lan = null; lanInfo = null; }
-  lanError = null;
+  for (const srv of lan) { srv.close(); srv.closeAllConnections?.(); }
+  lan = []; lanInfo = null; lanError = null;
   if (!on) return;
+  const hosts = [...lanAddresses(), localName()];
+  const info = { port: LAN_PORT, urls: [], secureUrls: [] };
   try {
-    const srv = http.createServer(handler);
-    devices.attach(srv);
-    await new Promise((resolve, reject) => { srv.once('error', reject); srv.listen(LAN_PORT, '0.0.0.0', resolve); });
-    lan = srv;
-    lanInfo = { port: LAN_PORT, urls: [...lanAddresses().map(i => `http://${i}:${LAN_PORT}`), `http://${localName()}:${LAN_PORT}`] };
-    console.log(`Other devices can open Aura at: ${lanInfo.urls.join('  ')}`);
-  } catch (e) {
-    lanError = e.code === 'EADDRINUSE' ? `Port ${LAN_PORT} is already used by another program.` : e.message;
-    console.error('Could not start network access:', lanError);
-  }
+    const plain = http.createServer(handler); devices.attach(plain);
+    await listen(plain, LAN_PORT); lan.push(plain);
+    info.urls = hosts.map(h => `http://${h}:${LAN_PORT}`);
+  } catch (e) { lanError = e.code === 'EADDRINUSE' ? `Port ${LAN_PORT} is already used by another program.` : e.message; }
+  try {
+    const tls = await certificate();
+    const secure = https.createServer({ key: tls.key, cert: tls.cert }, handler); devices.attach(secure);
+    await listen(secure, LAN_TLS_PORT); lan.push(secure);
+    info.secureUrls = hosts.map(h => `https://${h}:${LAN_TLS_PORT}`);
+  } catch (e) { lanError ||= e.code === 'EADDRINUSE' ? `Port ${LAN_TLS_PORT} is already used by another program.` : `Secure address unavailable: ${e.message}`; }
+  if (lan.length) { lanInfo = info; console.log(`Other devices can open Aura at: ${[...info.secureUrls, ...info.urls].join('  ')}`); }
+  if (lanError) console.error('Network access:', lanError);
 }
-const network = () => ({ on: !!lan, ...(lanInfo || {}), error: lanError });
+const network = () => ({ on: lan.length > 0, ...(lanInfo || {}), error: lanError });
 setLan(process.env.AURA_LAN === '1' || !!brain.getSettings().lan);
