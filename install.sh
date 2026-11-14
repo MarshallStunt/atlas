@@ -1,6 +1,6 @@
 #!/bin/sh
 # Atlas one-step install for macOS and Linux. No admin rights, no Node.js or git needed beforehand.
-#   One line:      curl -fsSL https://raw.githubusercontent.com/MarshallStunt/aura/main/install.sh | sh
+#   One line:      curl -fsSL https://raw.githubusercontent.com/MarshallStunt/atlas/main/install.sh | sh
 #   From a copy:   ./install.sh            (or double-click "Install Atlas (Mac).command")
 #   Hosted hub:    ./install.sh --hub=https://HUB   (or ATLAS_HUB=https://HUB before the one line)
 # It gets Node.js from nodejs.org (checksum-verified) into ~/.atlas if you don't have Node 20+,
@@ -43,8 +43,8 @@ else
   DIR="$ATLAS_HOME/app"
   if [ -d "$DIR" ]; then say "Updating Atlas to the latest version"; else say "Downloading Atlas"; fi
   rm -rf "$ATLAS_HOME/extract"; mkdir -p "$ATLAS_HOME/extract"
-  curl -fsSL https://github.com/MarshallStunt/aura/archive/refs/heads/main.tar.gz | tar -xz -C "$ATLAS_HOME/extract"
-  NEW="$ATLAS_HOME/extract/aura-main"
+  curl -fsSL https://github.com/MarshallStunt/atlas/archive/refs/heads/main.tar.gz | tar -xz -C "$ATLAS_HOME/extract"
+  NEW="$ATLAS_HOME/extract/atlas-main"
   # Keep the already-installed parts when they haven't changed, so updates are quick.
   if [ -d "$DIR/node_modules" ] && cmp -s "$DIR/package-lock.json" "$NEW/package-lock.json"; then mv "$DIR/node_modules" "$NEW/node_modules"; REUSED=1; fi
   rm -rf "$DIR"; mv "$NEW" "$DIR"; rm -rf "$ATLAS_HOME/extract"

@@ -23,13 +23,13 @@ The installer gets everything it needs, including its own copy of Node.js from n
 
 **Windows:** open PowerShell and paste:
 ```powershell
-irm https://raw.githubusercontent.com/MarshallStunt/aura/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/MarshallStunt/atlas/main/install.ps1 | iex
 ```
 If you downloaded the folder, double-click **Install Atlas (Windows).cmd** instead.
 
 **Mac / Linux:** open Terminal and paste:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MarshallStunt/aura/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/MarshallStunt/atlas/main/install.sh | sh
 ```
 If you downloaded the folder, double-click **Install Atlas (Mac).app** instead. If it came from a zip, right-click it and choose **Open** the first time.
 

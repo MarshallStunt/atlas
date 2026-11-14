@@ -1,6 +1,6 @@
 # Atlas one-step install for Windows. No admin rights, no Node.js or git needed beforehand.
 #
-#   One line (PowerShell):  irm https://raw.githubusercontent.com/MarshallStunt/aura/main/install.ps1 | iex
+#   One line (PowerShell):  irm https://raw.githubusercontent.com/MarshallStunt/atlas/main/install.ps1 | iex
 #   Or double-click "Install Atlas (Windows).cmd" in the Atlas folder.
 #   To use a hub hosted elsewhere:  $env:ATLAS_HUB = "https://HUB"; then run the line above.
 #
@@ -68,11 +68,11 @@ else {
   $Dir = Join-Path $Home_ "app"
   Say $(if (Test-Path $Dir) { "Updating Atlas to the latest version" } else { "Downloading Atlas" })
   $zip = Join-Path $Home_ "atlas.zip"
-  Invoke-WebRequest "https://github.com/MarshallStunt/aura/archive/refs/heads/main.zip" -OutFile $zip -UseBasicParsing
+  Invoke-WebRequest "https://github.com/MarshallStunt/atlas/archive/refs/heads/main.zip" -OutFile $zip -UseBasicParsing
   $tmp = Join-Path $Home_ "extract"
   if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
   Expand-Archive $zip -DestinationPath $tmp -Force
-  $new = Join-Path $tmp "aura-main"
+  $new = Join-Path $tmp "atlas-main"
   # Keep the already-installed parts when they haven't changed, so updates are quick.
   $oldLock = Join-Path $Dir "package-lock.json"; $oldMods = Join-Path $Dir "node_modules"
   if ((Test-Path $oldMods) -and (Test-Path $oldLock) -and ((Get-FileHash $oldLock).Hash -eq (Get-FileHash (Join-Path $new "package-lock.json")).Hash)) {
