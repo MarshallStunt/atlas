@@ -274,10 +274,20 @@ function onPage(current, wanted) {
     return new RegExp(want, 'i').test(c.pathname + c.hash) || (want === 'mail' && !/calendar/i.test(c.pathname + c.hash));
   } catch { return false; }
 }
+// Atlas's own pinned tabs for a page: same site and path, pinned. Chrome gives restored tabs new ids
+// after a restart, so Atlas finds its tab by address instead of opening another one.
+async function pinnedCopies(url) {
+  const w = new URL(url), base = w.origin + w.pathname.replace(/\/$/, '');
+  return (await chrome.tabs.query({ pinned: true })).filter(t => (t.url || t.pendingUrl || '').split(/[?#]/)[0].replace(/\/$/, '') === base);
+}
 async function ownTab(key, url) {
   const stored = (await chrome.storage.local.get('ownTabs')).ownTabs || {};
   let tab = stored[key] && await chrome.tabs.get(stored[key]).catch(() => null);
   let fresh = false;
+  const copies = await pinnedCopies(url).catch(() => []);
+  if (!tab && copies.length) { tab = copies[0]; await chrome.storage.local.set({ ownTabs: { ...stored, [key]: tab.id } }); }
+  // Close extra copies Atlas left behind earlier (pinned, same Atlas address); keep the one in use.
+  for (const t of copies) if (tab && t.id !== tab.id && !t.active) await chrome.tabs.remove(t.id).catch(() => {});
   if (!tab) {
     tab = await chrome.tabs.create({ url, active: false, pinned: true });
     await chrome.storage.local.set({ ownTabs: { ...stored, [key]: tab.id } });
@@ -519,6 +529,22 @@ async function inTab(tabId, func, args) {
   const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId }, func, args });
   return result;
 }
+// Tabs Atlas opened only to read a page are closed again once they've sat unused for 5 minutes
+// (kept that long so a follow-up click or type can use them).
+async function markTemp(id) {
+  const { tempTabs = {} } = await chrome.storage.local.get('tempTabs');
+  tempTabs[id] = Date.now(); await chrome.storage.local.set({ tempTabs });
+}
+async function closeTempTabs() {
+  const { tempTabs = {} } = await chrome.storage.local.get('tempTabs');
+  let changed = false;
+  for (const [id, at] of Object.entries(tempTabs)) {
+    const t = await chrome.tabs.get(Number(id)).catch(() => null);
+    if (!t) { delete tempTabs[id]; changed = true; continue; }
+    if (Date.now() - at > 5 * 60 * 1000 && !t.active) { await chrome.tabs.remove(t.id).catch(() => {}); delete tempTabs[id]; changed = true; }
+  }
+  if (changed) await chrome.storage.local.set({ tempTabs });
+}
 async function readJob({ tabId, url, find }) {
   let tab;
   if (tabId) tab = await chrome.tabs.get(Number(tabId));
@@ -527,7 +553,7 @@ async function readJob({ tabId, url, find }) {
     { const a = allowedUrl(url); if (!a.ok) throw new Error(a.why); }
     const want = url.replace(/[#?].*$/, '');
     tab = (await chrome.tabs.query({})).find(t => (t.url || '').startsWith(want));
-    if (!tab) { tab = await chrome.tabs.create({ url, active: false }); await waitLoaded(tab.id); tab = await chrome.tabs.get(tab.id); }
+    if (!tab) { tab = await chrome.tabs.create({ url, active: false }); await waitLoaded(tab.id); tab = await chrome.tabs.get(tab.id); await markTemp(tab.id); }
   } else throw new Error('Give a tabId or a url.');
   if (!readable(tab)) throw new Error('That tab is not a web page.');
   const allowed = allowedUrl(tab.url); if (!allowed.ok) throw new Error(allowed.why);
@@ -535,6 +561,7 @@ async function readJob({ tabId, url, find }) {
   return { tabId: tab.id, ...snap };
 }
 async function actJob({ tabId, ref, action, text }) {
+  { const { tempTabs = {} } = await chrome.storage.local.get('tempTabs'); if (tempTabs[tabId]) await markTemp(tabId); }
   const allowed = allowedUrl((await chrome.tabs.get(Number(tabId))).url); if (!allowed.ok) throw new Error(allowed.why);
   const r = await inTab(Number(tabId), actInPage, [String(ref), action, String(text || '')]);
   if (!r?.ok) throw new Error(r?.error || 'action failed');
@@ -575,7 +602,7 @@ async function pollJobs() {
 }
 
 chrome.alarms.create('sync', { periodInMinutes: 1 });
-chrome.alarms.onAlarm.addListener(() => { sync(); pollJobs(); });
+chrome.alarms.onAlarm.addListener(() => { sync(); pollJobs(); closeTempTabs().catch(() => {}); });
 chrome.runtime.onStartup.addListener(() => { sync(); pollJobs(); });
 chrome.runtime.onInstalled.addListener(() => { sync(); pollJobs(); });
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {

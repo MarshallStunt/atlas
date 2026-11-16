@@ -163,7 +163,11 @@ const tools = makeTools({ overview, browser });
    If a space's browser goes quiet (closed, crashed, asleep), start that browser again in the
    background. Its extension then wakes its app tabs and syncs by itself. */
 function browserRunning(app) {
-  if (process.platform === 'win32') return false;
+  if (process.platform === 'win32') {
+    // tasklist is a plain built-in tool. Starting Chrome while it's already running opens a new window, so check first.
+    const exe = { 'Google Chrome': 'chrome.exe', 'Microsoft Edge': 'msedge.exe', 'Brave Browser': 'brave.exe', Opera: 'opera.exe' }[app] || 'chrome.exe';
+    try { return execFileSync('tasklist', ['/fi', `IMAGENAME eq ${exe}`, '/fo', 'csv', '/nh'], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).toString().toLowerCase().includes(exe); } catch { return false; }
+  }
   try { return execFileSync('pgrep', ['-f', app], { stdio: ['ignore', 'pipe', 'ignore'] }).length > 0; } catch { return false; }
 }
 function launchBrowser(s, reason) {
