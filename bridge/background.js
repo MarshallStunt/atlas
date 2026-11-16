@@ -46,50 +46,139 @@ async function fetchInPage(u) {
   } catch (e) { return { error: String(e.message || e) }; }
 }
 /* ---------- self-healing app tabs ----------
-   Each app Atlas reads (Gmail, Calendar, Slack) needs a signed-in tab. If the user's own tab is gone,
-   Atlas keeps its own pinned background tab; if Chrome put the tab to sleep or it crashed, Atlas
-   reloads it. Only a real sign-out needs the user, and that is reported as SIGN_IN. */
+   Each app Atlas reads (Gmail, Calendar, Slack, Outlook) needs a signed-in page. Atlas reads from your own
+   tab of that app when one is open and loaded, and never closes, reloads or moves it. Otherwise it keeps its
+   own pinned background tab and keeps that healthy: woken up if Chrome put it to sleep, sent back if it
+   wandered off, refreshed every 30 minutes, found again by address after a restart. Only a real sign-out
+   needs you (reported as SIGN_IN), and a "confirm you're a person" check pauses that app for 30 minutes. */
 const SIGN_IN_PAGE = /accounts\.google\.com|ServiceLogin|\/signin|slack\.com\/(signin|workspace-signin|checkcookie)/i;
-async function appTab(key, pattern, openUrl) {
-  const tabs = await chrome.tabs.query({ url: pattern });
-  let tab = tabs.find(t => t.status === 'complete' && !t.discarded) || tabs[0];
+const MS_SIGN_IN = /login\.microsoftonline\.com|login\.live\.com|login\.microsoft\.com|\/owa\/auth\/logon|\/auth\/logon\.aspx|\/adfs\/ls/i;
+const BOT_CHECK = /google\.[a-z.]+\/sorry|\/captcha|challenges\.cloudflare\.com|\/cdn-cgi\/challenge/i;
+const BOT_TITLE = /unusual traffic|are you a robot|verify you are human|captcha/i;
+const REFRESH_MS = 30 * 60 * 1000, PAUSE_MS = 30 * 60 * 1000;
+const appName = key => key.replace(/ (mail|calendar)$/, ''); // "Outlook mail" and "Outlook calendar" are one app
+const base = url => (url || '').split(/[?#]/)[0].replace(/\/$/, '');
+const ownTabsGet = async () => (await chrome.storage.local.get('ownTabs')).ownTabs || {};
+const ownTabsSet = async patch => chrome.storage.local.set({ ownTabs: { ...(await ownTabsGet()), ...patch } });
+
+async function assertNotPaused(key) {
+  const { pausedApps = {} } = await chrome.storage.local.get('pausedApps');
+  const until = pausedApps[appName(key)] || 0;
+  if (Date.now() < until) throw new Error(`${appName(key)} is paused after a "confirm you're a person" check; back at ${new Date(until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+}
+async function pauseApp(key) {
+  const { pausedApps = {} } = await chrome.storage.local.get('pausedApps');
+  await chrome.storage.local.set({ pausedApps: { ...pausedApps, [appName(key)]: Date.now() + PAUSE_MS } });
+}
+const pausedError = key => new Error(`${appName(key)} asked to confirm this is a person, so Atlas paused it for 30 minutes`);
+// Signed out, or a bot check: stop here. Atlas never types credentials and never tries to get past a check.
+async function checkPage(key, tab) {
+  const url = tab?.url || tab?.pendingUrl || '';
+  if (BOT_CHECK.test(url) || BOT_TITLE.test(tab?.title || '')) { await pauseApp(key); throw pausedError(key); }
+  if (SIGN_IN_PAGE.test(url) || MS_SIGN_IN.test(url)) throw new Error(`SIGN_IN: you're signed out of ${appName(key)}. Sign in once in the pinned ${appName(key)} tab.`);
+}
+// Is the tab still in the app we opened? Same site and same first folder (/mail, /client, /calendar);
+// Outlook mail and calendar share a site, so for Outlook it's mail vs calendar, including OWA's "#path=/mail" links.
+function onPage(key, current, wanted) {
+  try {
+    const w = new URL(wanted), c = new URL(current || '');
+    if (c.host !== w.host) return false;
+    if (/^Outlook/.test(key)) {
+      const want = /calendar/i.test(w.pathname + w.hash) ? 'calendar' : 'mail';
+      return new RegExp(want, 'i').test(c.pathname + c.hash) || (want === 'mail' && !/calendar/i.test(c.pathname + c.hash));
+    }
+    return c.pathname.split('/')[1] === w.pathname.split('/')[1];
+  } catch { return false; }
+}
+// Atlas's own pinned tabs for an app, found by address: Chrome gives restored tabs new ids after a restart.
+// Only pinned tabs at exactly the address Atlas opened (or last saw it on) count, ignoring ?query and #hash.
+async function pinnedCopies(key, url) {
+  const seen = (await ownTabsGet())[key + ':at'];
+  const want = new Set([base(url), seen].filter(Boolean));
+  return (await chrome.tabs.query({ pinned: true })).filter(t => want.has(base(t.url || t.pendingUrl)));
+}
+// Atlas's own pinned tab for an app, healthy and loaded.
+async function ownTab(key, url) {
+  await assertNotPaused(key);
+  const stored = await ownTabsGet();
+  const legacy = ((await chrome.storage.local.get('tabs')).tabs || {})[key]; // Gmail/Slack tab id saved by versions before 0.8
+  let tab = await chrome.tabs.get(stored[key] || legacy || -1).catch(() => null);
+  const copies = await pinnedCopies(key, url).catch(() => []);
+  if (!tab && copies.length) tab = copies[0]; // adopt the restored tab instead of opening another
+  // Close extra pinned copies Atlas left behind earlier; keep the one in use (and any you're looking at).
+  for (const t of copies) if (tab && t.id !== tab.id && !t.active) await chrome.tabs.remove(t.id).catch(() => {});
   let fresh = false;
   if (!tab) {
-    const stored = (await chrome.storage.local.get('tabs')).tabs || {};
-    tab = stored[key] && await chrome.tabs.get(stored[key]).catch(() => null);
-    if (!tab) {
-      tab = await chrome.tabs.create({ url: openUrl, active: false, pinned: true });
-      await chrome.storage.local.set({ tabs: { ...stored, [key]: tab.id } });
+    tab = await chrome.tabs.create({ url, active: false, pinned: true });
+    fresh = true;
+  } else {
+    const now = tab.url || tab.pendingUrl || '';
+    const stuck = SIGN_IN_PAGE.test(now) || MS_SIGN_IN.test(now) || BOT_CHECK.test(now);
+    const stale = Date.now() - (stored[key + ':loaded'] || 0) > REFRESH_MS;
+    if (!stuck && !onPage(key, now, url)) { await chrome.tabs.update(tab.id, { url }); fresh = true; } // wandered off: go back
+    else if (tab.discarded || tab.frozen || tab.status === 'unloaded' || stale) {
+      if (stuck) await chrome.tabs.update(tab.id, { url }); else await chrome.tabs.reload(tab.id); // asleep, or 30 min old
       fresh = true;
     }
   }
-  if (tab.discarded || tab.status === 'unloaded' || tab.frozen) { await chrome.tabs.reload(tab.id); fresh = true; }
-  if (fresh) await waitLoaded(tab.id, 30000);
+  if (fresh) await waitLoaded(tab.id, 40000);
   tab = await chrome.tabs.get(tab.id);
-  if (SIGN_IN_PAGE.test(tab.url || '')) throw new Error(`SIGN_IN: you're signed out of ${key}. Sign in once in the pinned ${key} tab.`);
-  return { tab, fresh };
+  await ownTabsSet({ [key]: tab.id, [key + ':url']: url, [key + ':at']: base(tab.url), ...(fresh ? { [key + ':loaded']: Date.now() } : {}) });
+  await checkPage(key, tab);
+  return Object.assign(tab, { fresh });
 }
-// Run a function inside the app's tab; if the tab is broken, reload it once and try again.
+// Reload Atlas's own tab once (after a script failed in it) and check it again.
+async function reloadOwn(key, tabId) {
+  await chrome.tabs.reload(tabId); await waitLoaded(tabId, 40000);
+  const tab = await chrome.tabs.get(tabId);
+  await ownTabsSet({ [key + ':loaded']: Date.now(), [key + ':at']: base(tab.url) });
+  await checkPage(key, tab);
+  return tab;
+}
+// The tab to read an app from: your own loaded tab of it if there is one, otherwise Atlas's pinned tab.
+async function appTab(key, pattern, openUrl) {
+  await assertNotPaused(key);
+  const ours = new Set([(await ownTabsGet())[key], ...(await pinnedCopies(key, openUrl).catch(() => [])).map(t => t.id)]);
+  const yours = (await chrome.tabs.query({ url: pattern }))
+    .find(t => !ours.has(t.id) && t.status === 'complete' && !t.discarded && !t.frozen && !SIGN_IN_PAGE.test(t.url || '') && !BOT_CHECK.test(t.url || ''));
+  if (yours) return { tab: yours, yours: true };
+  return { tab: await ownTab(key, openUrl), yours: false };
+}
+// Run a function in the app's tab. If it fails in your tab, Atlas switches to its own (never touching yours);
+// if it fails in Atlas's tab, that tab is reloaded once and the function tried once more.
 async function inAppTab(key, pattern, openUrl, func, args) {
-  let { tab, fresh } = await appTab(key, pattern, openUrl);
-  const run = async () => (await chrome.scripting.executeScript({ target: { tabId: tab.id }, func, args }))[0]?.result;
-  try { return { result: await run(), tab, fresh }; }
-  catch {
-    await chrome.tabs.reload(tab.id); await waitLoaded(tab.id, 30000);
-    tab = await chrome.tabs.get(tab.id);
-    if (SIGN_IN_PAGE.test(tab.url || '')) throw new Error(`SIGN_IN: you're signed out of ${key}. Sign in once in the pinned ${key} tab.`);
-    return { result: await run(), tab, fresh: true };
+  let { tab, yours } = await appTab(key, pattern, openUrl);
+  const run = async id => (await chrome.scripting.executeScript({ target: { tabId: id }, func, args }))[0]?.result;
+  try { return { result: await run(tab.id), tab, yours }; } catch {}
+  if (yours) {
+    tab = await ownTab(key, openUrl); yours = false;
+    try { return { result: await run(tab.id), tab, yours }; } catch {}
   }
+  tab = await reloadOwn(key, tab.id);
+  return { result: await run(tab.id), tab, yours: false };
+}
+// Same, for apps read only from Atlas's own pinned tab (Calendar and Outlook need a particular view).
+async function inOwnTab(key, url, func, args) {
+  let tab = await ownTab(key, url);
+  const run = async () => (await chrome.scripting.executeScript({ target: { tabId: tab.id }, func, args }))[0]?.result;
+  try { return await run(); } catch {}
+  tab = await reloadOwn(key, tab.id);
+  return run();
 }
 async function fetchSignedIn(url, { name, tabPattern, openUrl, good }) {
-  try {
-    const r = await fetch(url, { credentials: 'include' });
-    const res = { ok: r.ok, status: r.status, url: r.url, text: await r.text() };
+  await assertNotPaused(name);
+  let direct;
+  try { direct = await fetch(url, { credentials: 'include' }); } catch {}
+  if (direct && BOT_CHECK.test(direct.url)) { await pauseApp(name); throw pausedError(name); } // never keep polling a feed that triggers it
+  if (direct) {
+    const res = { ok: direct.ok, status: direct.status, url: direct.url, text: await direct.text().catch(() => '') };
     if (good(res)) return res;
-  } catch {}
-  const { result } = await inAppTab(name, tabPattern, openUrl, fetchInPage, [url]);
+  }
+  const { result, tab } = await inAppTab(name, tabPattern, openUrl, fetchInPage, [url]);
   if (result && !result.error && good(result)) return result;
+  if (result && BOT_CHECK.test(result.url || '')) { await pauseApp(name); throw pausedError(name); }
   if (result && SIGN_IN_PAGE.test(result.url || '')) throw new Error(`SIGN_IN: you're signed out of ${name}. Sign in once in the pinned ${name} tab.`);
+  await checkPage(name, await chrome.tabs.get(tab.id).catch(() => null));
   throw new Error(`couldn't read ${name} (${result?.error || 'HTTP ' + result?.status}); retrying next minute`);
 }
 
@@ -113,7 +202,6 @@ async function gmail() {
    Google's old agenda feed now answers automated checks with an "unusual traffic" page, so Atlas
    reads the normal Calendar page (schedule view) instead. That page keeps itself up to date, so
    reading it every minute sends Google no extra requests; the tab is refreshed every 30 minutes. */
-const GOOGLE_SORRY = /google\.[a-z.]+\/sorry/i;
 // Runs inside the Calendar tab: each event button has a screen-reader label like
 // "9:30am to 10am, Title, Name, Accepted, Location, November 16, 2026" or "All day, Title, …, November 13 – 16, 2026".
 async function readGoogleCalendar() {
@@ -139,16 +227,8 @@ async function readGoogleCalendar() {
   return { ok: true, events: out };
 }
 async function calendar(email) {
-  const { calendarPausedUntil = 0 } = await chrome.storage.local.get('calendarPausedUntil');
-  if (Date.now() < calendarPausedUntil) throw new Error(`paused after Google's "unusual traffic" check; back at ${new Date(calendarPausedUntil).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
   const url = 'https://calendar.google.com/calendar/u/0/r/agenda' + (email ? `?authuser=${encodeURIComponent(email)}` : '');
-  const tab = await ownTab('Google Calendar', url);
-  if (GOOGLE_SORRY.test(tab.url || '')) {
-    await chrome.storage.local.set({ calendarPausedUntil: Date.now() + 30 * 60 * 1000 }); // back off; never try to get past the check
-    throw new Error('Google asked to confirm this is a person, so Atlas paused calendar checks for 30 minutes');
-  }
-  if (SIGN_IN_PAGE.test(tab.url || '')) throw new Error(`SIGN_IN: you're signed out of Google Calendar${email ? ` (${email})` : ''}. Sign in once in the pinned Calendar tab.`);
-  const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readGoogleCalendar });
+  const result = await inOwnTab('Google Calendar', url, readGoogleCalendar);
   if (!result?.ok) throw new Error("couldn't read Google Calendar; retrying next minute");
   const events = result.events.map(e => {
     const at = e.allDay ? Date.parse(e.day) : Date.parse(`${e.day} ${e.time.replace(/^(\d{1,2})\s?(am|pm)$/i, '$1:00$2').replace(/(am|pm)$/i, ' $1')}`); // "12pm" -> "12:00 pm"
@@ -246,12 +326,11 @@ async function slackInPage(job) {
 // People often use the Slack desktop app, so there may be no Slack tab: Atlas keeps its own pinned one.
 async function slackTabRun(job) {
   const run = () => inAppTab('Slack', 'https://app.slack.com/*', 'https://app.slack.com/client', slackInPage, [job || null]);
-  let { result, tab } = await run();
-  // Still starting up, or the stored session looks stale: reload the tab once and look again before
-  // deciding anything. Only call it a sign-out when Slack itself shows its sign-in page.
-  const ours = ((await chrome.storage.local.get('tabs')).tabs || {}).Slack === tab?.id; // never reload a tab you're using
-  if (!result?.ok && ours) {
-    await chrome.tabs.reload(tab.id); await waitLoaded(tab.id, 30000);
+  let { result, tab, yours } = await run();
+  // Still starting up, or the stored session looks stale: reload Atlas's own tab once and look again before
+  // deciding anything (a tab you're using is never reloaded). Only call it a sign-out when Slack shows its sign-in page.
+  if (!result?.ok && !yours) {
+    tab = await reloadOwn('Slack', tab.id).catch(() => tab);
     ({ result, tab } = await run());
   }
   if (result?.ok) return result;
@@ -264,42 +343,6 @@ async function slackTabRun(job) {
 /* ---------- Outlook (Microsoft 365): read from Atlas's own pinned Outlook tabs ----------
    Outlook has no simple feed, so Atlas keeps two pinned tabs (inbox and work-week calendar) and reads
    what Outlook shows, using its accessibility labels. Nothing is stored except what's sent to the agent. */
-const MS_SIGN_IN = /login\.microsoftonline\.com|login\.live\.com|login\.microsoft\.com|\/owa\/auth\/logon|\/auth\/logon\.aspx|\/adfs\/ls/i;
-// Is the tab still on the page we opened (mail vs calendar), including OWA's "#path=/mail" style links?
-function onPage(current, wanted) {
-  try {
-    const w = new URL(wanted), c = new URL(current || '');
-    if (c.host !== w.host && !MS_SIGN_IN.test(c.href)) return false;
-    const want = /calendar/i.test(w.pathname + w.hash) ? 'calendar' : 'mail';
-    return new RegExp(want, 'i').test(c.pathname + c.hash) || (want === 'mail' && !/calendar/i.test(c.pathname + c.hash));
-  } catch { return false; }
-}
-// Atlas's own pinned tabs for a page: same site and path, pinned. Chrome gives restored tabs new ids
-// after a restart, so Atlas finds its tab by address instead of opening another one.
-async function pinnedCopies(url) {
-  const w = new URL(url), base = w.origin + w.pathname.replace(/\/$/, '');
-  return (await chrome.tabs.query({ pinned: true })).filter(t => (t.url || t.pendingUrl || '').split(/[?#]/)[0].replace(/\/$/, '') === base);
-}
-async function ownTab(key, url) {
-  const stored = (await chrome.storage.local.get('ownTabs')).ownTabs || {};
-  let tab = stored[key] && await chrome.tabs.get(stored[key]).catch(() => null);
-  let fresh = false;
-  const copies = await pinnedCopies(url).catch(() => []);
-  if (!tab && copies.length) { tab = copies[0]; await chrome.storage.local.set({ ownTabs: { ...stored, [key]: tab.id } }); }
-  // Close extra copies Atlas left behind earlier (pinned, same Atlas address); keep the one in use.
-  for (const t of copies) if (tab && t.id !== tab.id && !t.active) await chrome.tabs.remove(t.id).catch(() => {});
-  if (!tab) {
-    tab = await chrome.tabs.create({ url, active: false, pinned: true });
-    await chrome.storage.local.set({ ownTabs: { ...stored, [key]: tab.id } });
-    fresh = true;
-  } else if (tab.discarded || !onPage(tab.url, url) || Date.now() - (stored[key + ':loaded'] || 0) > 30 * 60 * 1000) {
-    await chrome.tabs.update(tab.id, { url }); fresh = true; // asleep, wandered off, or 30 min old: reload
-  }
-  if (fresh) { await waitLoaded(tab.id, 40000); await chrome.storage.local.set({ ownTabs: { ...((await chrome.storage.local.get('ownTabs')).ownTabs || {}), [key]: tab.id, [key + ':loaded']: Date.now() } }); }
-  tab = await chrome.tabs.get(tab.id);
-  if (MS_SIGN_IN.test(tab.url || '')) throw new Error("SIGN_IN: you're signed out of Outlook. Sign in once in the pinned Outlook tab.");
-  return tab;
-}
 // Runs inside the Outlook inbox tab.
 async function readOutlookMail() {
   const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -358,8 +401,7 @@ async function outlook() {
   const base = 'https://outlook.office.com';
   const mailUrl = appConfig?.outlook?.mail || base + '/mail/inbox';
   const calUrl = appConfig?.outlook?.calendar || (appConfig?.outlook?.mail ? appConfig.outlook.mail.replace(/#path=\/mail.*$|\/mail.*$/i, m => m.startsWith('#') ? '#path=/calendar/view/workweek' : '/calendar/view/workweek') : base + '/calendar/view/workweek');
-  const mailTab = await ownTab('Outlook mail', mailUrl);
-  const [{ result: mail } = {}] = await chrome.scripting.executeScript({ target: { tabId: mailTab.id }, func: readOutlookMail });
+  const mail = await inOwnTab('Outlook mail', mailUrl, readOutlookMail);
   if (!mail?.ok) throw new Error("couldn't read the Outlook inbox; retrying next minute");
   const now = new Date();
   const when = t => {
@@ -370,8 +412,7 @@ async function outlook() {
   };
   let events = [], calError = null, calRaw = '';
   try {
-    const calTab = await ownTab('Outlook calendar', calUrl);
-    const [{ result: cal } = {}] = await chrome.scripting.executeScript({ target: { tabId: calTab.id }, func: readOutlookCalendar });
+    const cal = await inOwnTab('Outlook calendar', calUrl, readOutlookCalendar);
     calRaw = cal?.raw || '';
     events = (cal?.events || []).map(e => {
       const at = e.allDay ? Date.parse(e.date) : Date.parse(`${e.date} ${e.time}`);
@@ -423,16 +464,21 @@ function sync() {
   return syncing;
 }
 
-// When an app is turned off for this space, close the pinned tab Atlas opened for it.
-// Only Atlas's own tabs (remembered by ID) are closed; tabs you opened yourself are never touched.
+// When an app is turned off for this space, close the pinned tab Atlas keeps for it (reading stops in sync()).
+// Only Atlas's own pinned tabs (by saved id, or pinned at Atlas's exact address) are closed; yours are never touched.
 async function closeTurnedOffTabs(apps) {
-  const { tabs = {}, ownTabs = {} } = await chrome.storage.local.get(['tabs', 'ownTabs']);
-  const plan = [['gmail', tabs, 'Gmail'], ['gcal', tabs, 'Google Calendar'], ['gcal', ownTabs, 'Google Calendar'], ['slack', tabs, 'Slack'], ['outlook', ownTabs, 'Outlook mail'], ['outlook', ownTabs, 'Outlook calendar']];
+  const { tabs = {} } = await chrome.storage.local.get('tabs'); // ids saved by versions before 0.8
+  const ownTabs = await ownTabsGet();
+  const plan = [['gmail', 'Gmail'], ['gcal', 'Google Calendar'], ['slack', 'Slack'], ['outlook', 'Outlook mail'], ['outlook', 'Outlook calendar']];
   let changed = false;
-  for (const [id, map, key] of plan) {
-    if (apps[id] !== false || !map[key]) continue;
-    await chrome.tabs.remove(map[key]).catch(() => {});
-    delete map[key]; delete map[key + ':loaded']; changed = true;
+  for (const [id, key] of plan) {
+    if (apps[id] !== false) continue;
+    const ids = new Set([ownTabs[key], tabs[key]].filter(Boolean));
+    if (ownTabs[key + ':url']) for (const t of await pinnedCopies(key, ownTabs[key + ':url']).catch(() => [])) ids.add(t.id);
+    if (!ids.size) continue;
+    for (const tabId of ids) await chrome.tabs.remove(tabId).catch(() => {});
+    for (const k of ['', ':loaded', ':url', ':at']) delete ownTabs[key + k];
+    delete tabs[key]; changed = true;
   }
   if (changed) await chrome.storage.local.set({ tabs, ownTabs });
 }
